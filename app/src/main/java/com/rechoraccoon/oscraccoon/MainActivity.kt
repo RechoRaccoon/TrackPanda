@@ -6,11 +6,10 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.*
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
@@ -21,6 +20,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.zIndex
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
@@ -31,7 +31,6 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -412,9 +411,9 @@ fun RightPanel(modifier: Modifier, cyclingMessages: List<String>, cycleInterval:
                                 )
                                 .then(
                                     if (!isEditing) Modifier.pointerInput(index) {
-                                        androidx.compose.foundation.gestures.detectDragGestures(
-                                            onDragStart = { totalDragY = 0f; dragFromIndex = index; dragToIndex = index },
-                                            onDrag = { _, dragAmount ->
+                                        detectDragGestures(
+                                            onDragStart = { _: Offset -> totalDragY = 0f; dragFromIndex = index; dragToIndex = index },
+                                            onDrag = { _: androidx.compose.ui.input.pointer.PointerInputChange, dragAmount: Offset ->
                                                 totalDragY += dragAmount.y
                                                 val steps = (totalDragY / itemHeightPx.value).toInt()
                                                 dragToIndex = (dragFromIndex + steps).coerceIn(0, cyclingMessages.size - 1)
