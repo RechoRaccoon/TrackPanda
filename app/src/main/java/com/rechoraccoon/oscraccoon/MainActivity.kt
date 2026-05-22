@@ -3,7 +3,6 @@ package com.rechoraccoon.oscraccoon
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.os.Bundle
-import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.*
@@ -45,15 +44,21 @@ val BrownMid     = Color(0xFF6B3D1E)
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Load saved username and start polling if we have one
+        val savedUsername = AppPreferences.loadUsername(this)
+        if (savedUsername.isNotEmpty()) {
+            LastFmService.startPolling(savedUsername)
+        }
         setContent { OSCRaccoonApp() }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        LastFmService.stopPolling()
     }
 }
 
-fun DrawScope.drawCheckerboard(
-    colorA: Color = BrownDark,
-    colorB: Color = BrownLight,
-    cellSize: Float = 24f
-) {
+fun DrawScope.drawCheckerboard(colorA: Color = BrownDark, colorB: Color = BrownLight, cellSize: Float = 24f) {
     val cols = (size.width / cellSize).toInt() + 1
     val rows = (size.height / cellSize).toInt() + 1
     for (row in 0..rows) {
@@ -68,18 +73,19 @@ fun DrawScope.drawCheckerboard(
 fun OSCRaccoonApp() {
     val context = LocalContext.current
 
-    // Single unified message template - cycling codes go wherever user wants
-    var messageTemplate by remember { mutableStateOf("🎵 {song}\nby {artist} | {duration}\n{progress}\n{cycling}") }
-    var cyclingMessages by remember { mutableStateOf(listOf<String>()) }
-    var cycleInterval by remember { mutableStateOf(5) }
+    // Load persisted state
+    var lastFmUsername by remember { mutableStateOf(AppPreferences.loadUsername(context)) }
+    var messageTemplate by remember { mutableStateOf(AppPreferences.loadTemplate(context)) }
+    var cyclingMessages by remember { mutableStateOf(AppPreferences.loadCyclingMessages(context)) }
+    var cycleInterval by remember { mutableStateOf(AppPreferences.loadInterval(context)) }
     var isRunning by remember { mutableStateOf(false) }
-    var showAbout by remember { mutableStateOf(false) }
+    var showSetup by remember { mutableStateOf(lastFmUsername.isEmpty()) }
     var nowPlaying by remember { mutableStateOf(NowPlaying()) }
     var previewCycleIndex by remember { mutableStateOf(0) }
 
-    // Collect media updates
+    // Collect Last.fm updates
     LaunchedEffect(Unit) {
-        MediaListenerService.nowPlaying.collectLatest { nowPlaying = it }
+        LastFmService.nowPlaying.collectLatest { nowPlaying = it }
     }
 
     // Preview cycle ticker
@@ -91,11 +97,10 @@ fun OSCRaccoonApp() {
         }
     }
 
-    // Live preview
     val currentCycling = if (cyclingMessages.isNotEmpty()) cyclingMessages[previewCycleIndex] else ""
     val livePreview = OscForegroundService.formatTemplate(messageTemplate, nowPlaying, currentCycling)
 
-    // Push live template/cycling updates to running service
+    // Push live updates to running service
     LaunchedEffect(messageTemplate, cyclingMessages, cycleInterval) {
         if (isRunning) {
             val svc = Intent(context, OscForegroundService::class.java).apply {
@@ -112,7 +117,8 @@ fun OSCRaccoonApp() {
         Column(modifier = Modifier.fillMaxSize()) {
             HeaderBar(
                 isRunning = isRunning,
-                onAboutClick = { showAbout = true },
+                lastFmUsername = lastFmUsername,
+                onSetupClick = { showSetup = true },
                 onStartStop = {
                     if (isRunning) {
                         context.stopService(Intent(context, OscForegroundService::class.java))
@@ -135,76 +141,163 @@ fun OSCRaccoonApp() {
                 modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // LEFT — unified template
                 LeftPanel(
                     modifier = Modifier.weight(1f).fillMaxHeight(),
                     messageTemplate = messageTemplate,
-                    onTemplateChange = { messageTemplate = it },
+                    onTemplateChange = {
+                        messageTemplate = it
+                        AppPreferences.saveTemplate(context, it)
+                    },
                     nowPlaying = nowPlaying,
-                    livePreview = livePreview
+                    livePreview = livePreview,
+                    lastFmUsername = lastFmUsername
                 )
-                // RIGHT — cycling messages list
                 RightPanel(
                     modifier = Modifier.weight(1f).fillMaxHeight(),
                     cyclingMessages = cyclingMessages,
                     cycleInterval = cycleInterval,
-                    onMessagesChange = { cyclingMessages = it },
-                    onIntervalChange = { cycleInterval = it }
+                    onMessagesChange = {
+                        cyclingMessages = it
+                        AppPreferences.saveCyclingMessages(context, it)
+                    },
+                    onIntervalChange = {
+                        cycleInterval = it
+                        AppPreferences.saveInterval(context, it)
+                    }
                 )
             }
         }
-        if (showAbout) AboutDialog { showAbout = false }
-    }
-}
 
-@Composable
-fun HeaderBar(isRunning: Boolean, onAboutClick: () -> Unit, onStartStop: () -> Unit, onClearChatbox: () -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth().background(BrownMid.copy(alpha = 0.85f)).padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
-        Text(
-            "OSCRaccoon by RechoRaccoon",
-            color = GreenPrimary,
-            fontSize = 18.sp,
-            fontWeight = FontWeight.Bold,
-            fontFamily = FontFamily.Monospace
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            RaccoonButton(text = "Clear Chatbox", onClick = onClearChatbox, small = true)
-            RaccoonButton(text = if (isRunning) "■ Stop" else "▶ Start", onClick = onStartStop, highlighted = !isRunning)
-            RaccoonButton(text = "About", onClick = onAboutClick, small = true)
+        // Last.fm setup dialog — shown on first launch or when username button clicked
+        if (showSetup) {
+            LastFmSetupDialog(
+                currentUsername = lastFmUsername,
+                onConfirm = { username ->
+                    lastFmUsername = username
+                    AppPreferences.saveUsername(context, username)
+                    LastFmService.startPolling(username)
+                    showSetup = false
+                },
+                onDismiss = { if (lastFmUsername.isNotEmpty()) showSetup = false }
+            )
         }
     }
 }
 
 @Composable
-fun LeftPanel(modifier: Modifier, messageTemplate: String, onTemplateChange: (String) -> Unit, nowPlaying: NowPlaying, livePreview: String) {
+fun HeaderBar(isRunning: Boolean, lastFmUsername: String, onSetupClick: () -> Unit, onStartStop: () -> Unit, onClearChatbox: () -> Unit) {
+    val context = LocalContext.current
+    val icon: ImageBitmap? = remember {
+        try { BitmapFactory.decodeStream(context.assets.open("recho_icon.png"))?.asImageBitmap() }
+        catch (e: Exception) { null }
+    }
+
+    Row(
+        modifier = Modifier.fillMaxWidth().background(BrownMid.copy(alpha = 0.85f)).padding(horizontal = 16.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        // Left: pfp + title + socials
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (icon != null) {
+                Image(bitmap = icon, contentDescription = "Recho Raccoon",
+                    modifier = Modifier.size(36.dp).border(1.dp, GreenPrimary, RoundedCornerShape(18.dp)))
+            }
+            Text("OSCRaccoon", color = GreenPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+            Text("by Recho Raccoon", color = GreenPrimary.copy(alpha = 0.7f), fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+            RaccoonButton(text = "Recho's Socials", small = true, onClick = {
+                context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://guns.lol/rechoraccoon")))
+            })
+        }
+
+        // Right: Last.fm status + clear + start/stop
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            // Last.fm username button
+            RaccoonButton(
+                text = if (lastFmUsername.isEmpty()) "⚠ Connect Last.fm" else "Last.fm: $lastFmUsername",
+                onClick = onSetupClick,
+                small = true,
+                highlighted = lastFmUsername.isEmpty()
+            )
+            RaccoonButton(text = "Clear Chatbox", onClick = onClearChatbox)
+            RaccoonButton(text = if (isRunning) "■ Stop" else "▶ Start", onClick = onStartStop, highlighted = !isRunning)
+        }
+    }
+}
+
+@Composable
+fun LastFmSetupDialog(currentUsername: String, onConfirm: (String) -> Unit, onDismiss: () -> Unit) {
+    var username by remember { mutableStateOf(currentUsername) }
+    val context = LocalContext.current
+
+    Dialog(onDismissRequest = onDismiss) {
+        Box(modifier = Modifier.width(420.dp).drawBehind { drawCheckerboard() }.border(2.dp, GreenPrimary, RoundedCornerShape(12.dp)).padding(24.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text("Connect Last.fm", color = GreenPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+
+                HorizontalDivider(color = GreenPrimary.copy(alpha = 0.3f))
+
+                Text("Last.fm tracks your music automatically from Spotify, YouTube Music, and more — for free.", color = GreenPrimary.copy(alpha = 0.85f), fontSize = 12.sp, fontFamily = FontFamily.Monospace, lineHeight = 18.sp)
+
+                // Step 1
+                SetupStep(number = "1", text = "Create a free account at last.fm/join")
+                RaccoonButton(text = "Open last.fm/join", small = true, onClick = {
+                    context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://www.last.fm/join")))
+                })
+
+                // Step 2
+                SetupStep(number = "2", text = "Connect Spotify (or any music app) at last.fm/settings/applications")
+                RaccoonButton(text = "Open Last.fm Settings", small = true, onClick = {
+                    context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://www.last.fm/settings/applications")))
+                })
+
+                // Step 3
+                SetupStep(number = "3", text = "Enter your Last.fm username below:")
+                RaccoonTextField(
+                    value = username,
+                    onValueChange = { username = it },
+                    placeholder = "Your Last.fm username",
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                Text("That's it! OSC Raccoon will automatically show whatever you're listening to.", color = GreenPrimary.copy(alpha = 0.6f), fontSize = 11.sp, fontFamily = FontFamily.Monospace, lineHeight = 16.sp)
+
+                HorizontalDivider(color = GreenPrimary.copy(alpha = 0.3f))
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    RaccoonButton(
+                        text = "Connect",
+                        onClick = { if (username.isNotBlank()) onConfirm(username.trim()) },
+                        highlighted = true
+                    )
+                    if (currentUsername.isNotEmpty()) {
+                        RaccoonButton(text = "Cancel", onClick = onDismiss)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun SetupStep(number: String, text: String) {
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("$number.", color = GreenPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+        Text(text, color = GreenPrimary.copy(alpha = 0.85f), fontSize = 12.sp, fontFamily = FontFamily.Monospace, lineHeight = 18.sp)
+    }
+}
+
+@Composable
+fun LeftPanel(modifier: Modifier, messageTemplate: String, onTemplateChange: (String) -> Unit, nowPlaying: NowPlaying, livePreview: String, lastFmUsername: String) {
     PanelCard(modifier = modifier, title = "Message Template") {
-        Text(
-            "Placeholders:  {song}  {artist}  {duration}  {progress}  {cycling}",
-            color = GreenPrimary.copy(alpha = 0.7f),
-            fontSize = 11.sp,
-            fontFamily = FontFamily.Monospace,
-            modifier = Modifier.padding(bottom = 8.dp)
-        )
-        RaccoonTextArea(
-            value = messageTemplate,
-            onValueChange = onTemplateChange,
-            label = "Message template",
-            modifier = Modifier.fillMaxWidth().height(110.dp)
-        )
+        Text("Placeholders:  {song}  {artist}  {cycling}  {time}", color = GreenPrimary.copy(alpha = 0.7f), fontSize = 11.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.padding(bottom = 8.dp))
+        RaccoonTextArea(value = messageTemplate, onValueChange = onTemplateChange, label = "Message template", modifier = Modifier.fillMaxWidth().height(100.dp))
         Spacer(Modifier.height(12.dp))
-        SectionLabel("Now Playing")
+        SectionLabel("Now Playing" + if (lastFmUsername.isNotEmpty()) " (via Last.fm)" else "")
         NowPlayingCard(nowPlaying)
         Spacer(Modifier.height(12.dp))
         SectionLabel("Live Chatbox Preview")
-        Box(
-            modifier = Modifier.fillMaxWidth().weight(1f)
-                .border(1.dp, GreenPrimary.copy(alpha = 0.4f), RoundedCornerShape(6.dp))
-                .padding(10.dp)
-        ) {
+        Box(modifier = Modifier.fillMaxWidth().weight(1f).border(1.dp, GreenPrimary.copy(alpha = 0.4f), RoundedCornerShape(6.dp)).padding(10.dp)) {
             Text(livePreview.ifEmpty { "(empty)" }, color = GreenPrimary, fontSize = 13.sp, fontFamily = FontFamily.Monospace, lineHeight = 18.sp)
         }
     }
@@ -217,11 +310,8 @@ fun RightPanel(modifier: Modifier, cyclingMessages: List<String>, cycleInterval:
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             Text("Cycle every:", color = GreenPrimary, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
             Slider(
-                value = cycleInterval.toFloat(),
-                onValueChange = { onIntervalChange(it.toInt()) },
-                valueRange = 1f..30f,
-                steps = 28,
-                modifier = Modifier.weight(1f),
+                value = cycleInterval.toFloat(), onValueChange = { onIntervalChange(it.toInt()) },
+                valueRange = 1f..30f, steps = 28, modifier = Modifier.weight(1f),
                 colors = SliderDefaults.colors(thumbColor = GreenPrimary, activeTrackColor = GreenPrimary, inactiveTrackColor = GreenPrimary.copy(alpha = 0.3f))
             )
             Text("${cycleInterval}s", color = GreenPrimary, fontSize = 12.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.width(32.dp))
@@ -229,9 +319,9 @@ fun RightPanel(modifier: Modifier, cyclingMessages: List<String>, cycleInterval:
         Spacer(Modifier.height(8.dp))
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
             RaccoonTextField(value = newMessage, onValueChange = { newMessage = it }, placeholder = "New cycling message...", modifier = Modifier.weight(1f))
-            RaccoonButton(text = "+ Add", onClick = {
+            RaccoonButton(text = "+ Add", small = true, onClick = {
                 if (newMessage.isNotBlank()) { onMessagesChange(cyclingMessages + newMessage.trim()); newMessage = "" }
-            }, small = true)
+            })
         }
         Spacer(Modifier.height(8.dp))
         if (cyclingMessages.isEmpty()) {
@@ -244,20 +334,8 @@ fun RightPanel(modifier: Modifier, cyclingMessages: List<String>, cycleInterval:
                     CyclingMessageRow(
                         message = message, index = index,
                         onDelete = { onMessagesChange(cyclingMessages.toMutableList().also { it.removeAt(index) }) },
-                        onMoveUp = {
-                            if (index > 0) {
-                                val list = cyclingMessages.toMutableList()
-                                val tmp = list[index]; list[index] = list[index-1]; list[index-1] = tmp
-                                onMessagesChange(list)
-                            }
-                        },
-                        onMoveDown = {
-                            if (index < cyclingMessages.size - 1) {
-                                val list = cyclingMessages.toMutableList()
-                                val tmp = list[index]; list[index] = list[index+1]; list[index+1] = tmp
-                                onMessagesChange(list)
-                            }
-                        }
+                        onMoveUp = { if (index > 0) { val l = cyclingMessages.toMutableList(); val t = l[index]; l[index] = l[index-1]; l[index-1] = t; onMessagesChange(l) } },
+                        onMoveDown = { if (index < cyclingMessages.size - 1) { val l = cyclingMessages.toMutableList(); val t = l[index]; l[index] = l[index+1]; l[index+1] = t; onMessagesChange(l) } }
                     )
                 }
             }
@@ -269,8 +347,7 @@ fun RightPanel(modifier: Modifier, cyclingMessages: List<String>, cycleInterval:
 fun CyclingMessageRow(message: String, index: Int, onDelete: () -> Unit, onMoveUp: () -> Unit, onMoveDown: () -> Unit) {
     Row(
         modifier = Modifier.fillMaxWidth().border(1.dp, GreenPrimary.copy(alpha = 0.3f), RoundedCornerShape(6.dp)).padding(horizontal = 8.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp)
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
         Text("${index+1}.", color = GreenPrimary.copy(alpha = 0.5f), fontSize = 11.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.width(20.dp))
         Text(message, color = GreenPrimary, fontSize = 12.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.weight(1f))
@@ -282,48 +359,16 @@ fun CyclingMessageRow(message: String, index: Int, onDelete: () -> Unit, onMoveU
 
 @Composable
 fun NowPlayingCard(nowPlaying: NowPlaying) {
-    val posMin = (nowPlaying.positionMs / 1000) / 60
-    val posSec = (nowPlaying.positionMs / 1000) % 60
-    val durMin = (nowPlaying.durationMs / 1000) / 60
-    val durSec = (nowPlaying.durationMs / 1000) % 60
     Box(modifier = Modifier.fillMaxWidth().border(1.dp, GreenPrimary.copy(alpha = 0.4f), RoundedCornerShape(6.dp)).padding(10.dp)) {
         Column {
-            Text(if (nowPlaying.title.isNotEmpty()) nowPlaying.title else "Nothing Playing", color = GreenPrimary, fontSize = 14.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-            if (nowPlaying.artist.isNotEmpty()) Text(nowPlaying.artist, color = GreenPrimary.copy(alpha = 0.8f), fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-            if (nowPlaying.durationMs > 0) {
-                Spacer(Modifier.height(4.dp))
-                val progress = (nowPlaying.positionMs.toFloat() / nowPlaying.durationMs).coerceIn(0f, 1f)
-                LinearProgressIndicator(progress = { progress }, modifier = Modifier.fillMaxWidth().height(4.dp), color = GreenPrimary, trackColor = GreenPrimary.copy(alpha = 0.2f))
-                Spacer(Modifier.height(2.dp))
-                Text("%d:%02d / %d:%02d".format(posMin, posSec, durMin, durSec), color = GreenPrimary.copy(alpha = 0.7f), fontSize = 10.sp, fontFamily = FontFamily.Monospace)
-            }
-        }
-    }
-}
-
-@Composable
-fun AboutDialog(onDismiss: () -> Unit) {
-    val context = LocalContext.current
-    val icon: ImageBitmap? = remember {
-        try { BitmapFactory.decodeStream(context.assets.open("recho_icon.png"))?.asImageBitmap() }
-        catch (e: Exception) { null }
-    }
-    Dialog(onDismissRequest = onDismiss) {
-        Box(modifier = Modifier.width(280.dp).drawBehind { drawCheckerboard() }.border(2.dp, GreenPrimary, RoundedCornerShape(12.dp)).padding(24.dp)) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                if (icon != null) {
-                    Image(bitmap = icon, contentDescription = "Recho Raccoon", modifier = Modifier.size(80.dp).border(2.dp, GreenPrimary, RoundedCornerShape(40.dp)))
-                    Spacer(Modifier.height(10.dp))
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (nowPlaying.isPlaying) {
+                    Text("▶", color = GreenPrimary, fontSize = 10.sp)
                 }
-                Text("OSCRaccoon", color = GreenPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-                Text("by RechoRaccoon", color = GreenPrimary.copy(alpha = 0.8f), fontSize = 13.sp, fontFamily = FontFamily.Monospace)
-                Text("The One And Only", color = GreenPrimary.copy(alpha = 0.6f), fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-                Spacer(Modifier.height(16.dp))
-                RaccoonButton(text = "Recho's Socials", onClick = {
-                    context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://guns.lol/rechoraccoon")))
-                })
-                Spacer(Modifier.height(8.dp))
-                RaccoonButton(text = "Close", onClick = onDismiss)
+                Text(if (nowPlaying.title.isNotEmpty()) nowPlaying.title else "Nothing Playing", color = GreenPrimary, fontSize = 14.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+            }
+            if (nowPlaying.artist.isNotEmpty()) {
+                Text(nowPlaying.artist, color = GreenPrimary.copy(alpha = 0.8f), fontSize = 12.sp, fontFamily = FontFamily.Monospace)
             }
         }
     }
@@ -347,10 +392,10 @@ fun RaccoonButton(text: String, onClick: () -> Unit, small: Boolean = false, hig
     val bg = if (highlighted) GreenPrimary else Color.Transparent
     val fg = if (highlighted) BrownDark else GreenPrimary
     Box(
-        modifier = Modifier.background(bg, RoundedCornerShape(6.dp)).border(1.dp, GreenPrimary, RoundedCornerShape(6.dp)).clickable(onClick = onClick).padding(horizontal = if (small) 10.dp else 16.dp, vertical = if (small) 5.dp else 8.dp),
+        modifier = Modifier.height(36.dp).background(bg, RoundedCornerShape(6.dp)).border(1.dp, GreenPrimary, RoundedCornerShape(6.dp)).clickable(onClick = onClick).padding(horizontal = if (small) 10.dp else 14.dp),
         contentAlignment = Alignment.Center
     ) {
-        Text(text, color = fg, fontSize = if (small) 11.sp else 13.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+        Text(text, color = fg, fontSize = if (small) 11.sp else 12.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
     }
 }
 

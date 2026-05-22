@@ -8,6 +8,8 @@ import android.content.Intent
 import android.os.IBinder
 import android.os.PowerManager
 import kotlinx.coroutines.*
+import java.text.SimpleDateFormat
+import java.util.*
 
 class OscForegroundService : Service() {
 
@@ -21,29 +23,20 @@ class OscForegroundService : Service() {
         var isRunning = false
 
         fun formatTemplate(template: String, nowPlaying: NowPlaying, currentCycling: String): String {
-            val posMin = (nowPlaying.positionMs / 1000) / 60
-            val posSec = (nowPlaying.positionMs / 1000) % 60
-            val durMin = (nowPlaying.durationMs / 1000) / 60
-            val durSec = (nowPlaying.durationMs / 1000) % 60
-            val duration = "%d:%02d / %d:%02d".format(posMin, posSec, durMin, durSec)
-            val progressBarLength = 12
-            val progress = if (nowPlaying.durationMs > 0)
-                (nowPlaying.positionMs.toFloat() / nowPlaying.durationMs.toFloat()) else 0f
-            val filled = (progress * progressBarLength).toInt().coerceIn(0, progressBarLength)
-            val progressBar = "▓".repeat(filled) + "░".repeat(progressBarLength - filled)
+            val timeFmt = SimpleDateFormat("h:mm a", Locale.getDefault())
+            val time = timeFmt.format(Date())
             return template
                 .replace("{song}", nowPlaying.title.ifEmpty { "Nothing Playing" })
                 .replace("{artist}", nowPlaying.artist.ifEmpty { "Unknown" })
-                .replace("{duration}", duration)
-                .replace("{progress}", progressBar)
                 .replace("{cycling}", currentCycling)
+                .replace("{time}", time)
         }
     }
 
     private val serviceScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     private var wakeLock: PowerManager.WakeLock? = null
 
-    @Volatile private var mainTemplate = "🎵 {song}\nby {artist} | {duration}\n{progress}\n{cycling}"
+    @Volatile private var mainTemplate = "🎵 {song}\nby {artist}\n{cycling}\n{time}"
     @Volatile private var cyclingMessages = listOf<String>()
     @Volatile private var cycleIntervalSeconds = 5
     private var currentCycleIndex = 0
@@ -68,11 +61,9 @@ class OscForegroundService : Service() {
                 startOscLoop()
             }
             ACTION_UPDATE -> {
-                // Live update without restarting
                 mainTemplate = intent.getStringExtra(EXTRA_MAIN_TEMPLATE) ?: mainTemplate
                 cyclingMessages = intent.getStringArrayListExtra(EXTRA_CYCLING_MESSAGES) ?: listOf()
                 cycleIntervalSeconds = intent.getIntExtra(EXTRA_CYCLE_INTERVAL, 5)
-                // Reset cycle index if messages changed
                 if (currentCycleIndex >= cyclingMessages.size) currentCycleIndex = 0
             }
             ACTION_STOP -> stopSelf()
@@ -91,8 +82,7 @@ class OscForegroundService : Service() {
     private fun startOscLoop() {
         serviceScope.launch {
             while (isActive) {
-                val nowPlaying = MediaListenerService.nowPlaying.value
-                MediaListenerService.getInstance()?.pollPosition()
+                val nowPlaying = LastFmService.nowPlaying.value
 
                 cycleTickCounter++
                 if (cycleTickCounter >= cycleIntervalSeconds) {
