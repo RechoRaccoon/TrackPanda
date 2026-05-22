@@ -23,7 +23,7 @@ object AppPreferences {
         prefs(context).edit().putString(KEY_TEMPLATE, template).apply()
 
     fun loadTemplate(context: Context): String =
-        prefs(context).getString(KEY_TEMPLATE, "🎵 {song}\nby {artist}\n{cycling}\n{time}") ?: "🎵 {song}\nby {artist}\n{cycling}\n{time}"
+        prefs(context).getString(KEY_TEMPLATE, "🎵 {song} by {artist}\n{cycling}\n{time}") ?: "🎵 {song} by {artist}\n{cycling}\n{time}"
 
     fun saveCyclingMessages(context: Context, messages: List<String>) =
         prefs(context).edit().putString(KEY_CYCLING, messages.joinToString("|||")).apply()

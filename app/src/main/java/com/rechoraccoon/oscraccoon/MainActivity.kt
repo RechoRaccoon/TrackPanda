@@ -6,9 +6,11 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.*
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
@@ -25,7 +27,10 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -33,6 +38,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 
@@ -44,14 +53,10 @@ val BrownMid     = Color(0xFF6B3D1E)
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Load saved username and start polling if we have one
         val savedUsername = AppPreferences.loadUsername(this)
-        if (savedUsername.isNotEmpty()) {
-            LastFmService.startPolling(savedUsername)
-        }
+        if (savedUsername.isNotEmpty()) LastFmService.startPolling(savedUsername)
         setContent { OSCRaccoonApp() }
     }
-
     override fun onDestroy() {
         super.onDestroy()
         LastFmService.stopPolling()
@@ -69,26 +74,25 @@ fun DrawScope.drawCheckerboard(colorA: Color = BrownDark, colorB: Color = BrownL
     }
 }
 
+val DEFAULT_CYCLING = listOf("Join the Raccoon Army! 🦝", "Follow @RechoRaccoon on all socials!")
+
 @Composable
 fun OSCRaccoonApp() {
     val context = LocalContext.current
-
-    // Load persisted state
     var lastFmUsername by remember { mutableStateOf(AppPreferences.loadUsername(context)) }
     var messageTemplate by remember { mutableStateOf(AppPreferences.loadTemplate(context)) }
-    var cyclingMessages by remember { mutableStateOf(AppPreferences.loadCyclingMessages(context)) }
+    var cyclingMessages by remember {
+        val saved = AppPreferences.loadCyclingMessages(context)
+        mutableStateOf(if (saved.isEmpty()) DEFAULT_CYCLING else saved)
+    }
     var cycleInterval by remember { mutableStateOf(AppPreferences.loadInterval(context)) }
     var isRunning by remember { mutableStateOf(false) }
     var showSetup by remember { mutableStateOf(lastFmUsername.isEmpty()) }
     var nowPlaying by remember { mutableStateOf(NowPlaying()) }
     var previewCycleIndex by remember { mutableStateOf(0) }
 
-    // Collect Last.fm updates
-    LaunchedEffect(Unit) {
-        LastFmService.nowPlaying.collectLatest { nowPlaying = it }
-    }
+    LaunchedEffect(Unit) { LastFmService.nowPlaying.collectLatest { nowPlaying = it } }
 
-    // Preview cycle ticker
     LaunchedEffect(cyclingMessages, cycleInterval) {
         while (true) {
             delay(cycleInterval * 1000L)
@@ -97,10 +101,9 @@ fun OSCRaccoonApp() {
         }
     }
 
-    val currentCycling = if (cyclingMessages.isNotEmpty()) cyclingMessages[previewCycleIndex] else ""
+    val currentCycling = if (cyclingMessages.isNotEmpty()) cyclingMessages[previewCycleIndex.coerceIn(0, (cyclingMessages.size - 1).coerceAtLeast(0))] else ""
     val livePreview = OscForegroundService.formatTemplate(messageTemplate, nowPlaying, currentCycling)
 
-    // Push live updates to running service
     LaunchedEffect(messageTemplate, cyclingMessages, cycleInterval) {
         if (isRunning) {
             val svc = Intent(context, OscForegroundService::class.java).apply {
@@ -136,7 +139,6 @@ fun OSCRaccoonApp() {
                 },
                 onClearChatbox = { OscSender.clearChatbox() }
             )
-
             Row(
                 modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
@@ -144,10 +146,7 @@ fun OSCRaccoonApp() {
                 LeftPanel(
                     modifier = Modifier.weight(1f).fillMaxHeight(),
                     messageTemplate = messageTemplate,
-                    onTemplateChange = {
-                        messageTemplate = it
-                        AppPreferences.saveTemplate(context, it)
-                    },
+                    onTemplateChange = { messageTemplate = it; AppPreferences.saveTemplate(context, it) },
                     nowPlaying = nowPlaying,
                     livePreview = livePreview,
                     lastFmUsername = lastFmUsername
@@ -157,18 +156,17 @@ fun OSCRaccoonApp() {
                     cyclingMessages = cyclingMessages,
                     cycleInterval = cycleInterval,
                     onMessagesChange = {
-                        cyclingMessages = it
-                        AppPreferences.saveCyclingMessages(context, it)
+                        // Clamp preview index before updating to prevent crashes
+                        val newList = it
+                        if (newList.isEmpty()) previewCycleIndex = 0
+                        else if (previewCycleIndex >= newList.size) previewCycleIndex = newList.size - 1
+                        cyclingMessages = newList
+                        AppPreferences.saveCyclingMessages(context, newList)
                     },
-                    onIntervalChange = {
-                        cycleInterval = it
-                        AppPreferences.saveInterval(context, it)
-                    }
+                    onIntervalChange = { cycleInterval = it; AppPreferences.saveInterval(context, it) }
                 )
             }
         }
-
-        // Last.fm setup dialog — shown on first launch or when username button clicked
         if (showSetup) {
             LastFmSetupDialog(
                 currentUsername = lastFmUsername,
@@ -187,37 +185,37 @@ fun OSCRaccoonApp() {
 @Composable
 fun HeaderBar(isRunning: Boolean, lastFmUsername: String, onSetupClick: () -> Unit, onStartStop: () -> Unit, onClearChatbox: () -> Unit) {
     val context = LocalContext.current
+    // App icon - will use osc_raccoon_icon.png once provided, falls back to recho_icon.png
     val icon: ImageBitmap? = remember {
-        try { BitmapFactory.decodeStream(context.assets.open("recho_icon.png"))?.asImageBitmap() }
-        catch (e: Exception) { null }
+        try { BitmapFactory.decodeStream(context.assets.open("osc_raccoon_icon.png"))?.asImageBitmap() }
+        catch (e: Exception) {
+            try { BitmapFactory.decodeStream(context.assets.open("recho_icon.png"))?.asImageBitmap() }
+            catch (e2: Exception) { null }
+        }
     }
-
     Row(
         modifier = Modifier.fillMaxWidth().background(BrownMid.copy(alpha = 0.85f)).padding(horizontal = 16.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
-        // Left: pfp + title + socials
+        // Left: app icon + title
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             if (icon != null) {
-                Image(bitmap = icon, contentDescription = "Recho Raccoon",
+                Image(bitmap = icon, contentDescription = "OSC Raccoon",
                     modifier = Modifier.size(36.dp).border(1.dp, GreenPrimary, RoundedCornerShape(18.dp)))
             }
-            Text("OSCRaccoon", color = GreenPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-            Text("by Recho Raccoon", color = GreenPrimary.copy(alpha = 0.7f), fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+            Column {
+                Text("OSCRaccoon by Recho Raccoon", color = GreenPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+            }
             RaccoonButton(text = "Recho's Socials", small = true, onClick = {
                 context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://guns.lol/rechoraccoon")))
             })
         }
-
-        // Right: Last.fm status + clear + start/stop
+        // Right: Last.fm + clear + start/stop
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            // Last.fm username button
             RaccoonButton(
                 text = if (lastFmUsername.isEmpty()) "⚠ Connect Last.fm" else "Last.fm: $lastFmUsername",
-                onClick = onSetupClick,
-                small = true,
-                highlighted = lastFmUsername.isEmpty()
+                onClick = onSetupClick, small = true, highlighted = lastFmUsername.isEmpty()
             )
             RaccoonButton(text = "Clear Chatbox", onClick = onClearChatbox)
             RaccoonButton(text = if (isRunning) "■ Stop" else "▶ Start", onClick = onStartStop, highlighted = !isRunning)
@@ -229,50 +227,30 @@ fun HeaderBar(isRunning: Boolean, lastFmUsername: String, onSetupClick: () -> Un
 fun LastFmSetupDialog(currentUsername: String, onConfirm: (String) -> Unit, onDismiss: () -> Unit) {
     var username by remember { mutableStateOf(currentUsername) }
     val context = LocalContext.current
-
     Dialog(onDismissRequest = onDismiss) {
         Box(modifier = Modifier.width(420.dp).drawBehind { drawCheckerboard() }.border(2.dp, GreenPrimary, RoundedCornerShape(12.dp)).padding(24.dp)) {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("Connect Last.fm", color = GreenPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-
                 HorizontalDivider(color = GreenPrimary.copy(alpha = 0.3f))
-
                 Text("Last.fm tracks your music automatically from Spotify, YouTube Music, and more — for free.", color = GreenPrimary.copy(alpha = 0.85f), fontSize = 12.sp, fontFamily = FontFamily.Monospace, lineHeight = 18.sp)
-
-                // Step 1
-                SetupStep(number = "1", text = "Create a free account at last.fm/join")
-                RaccoonButton(text = "Open last.fm/join", small = true, onClick = {
-                    context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://www.last.fm/join")))
-                })
-
-                // Step 2
-                SetupStep(number = "2", text = "Connect Spotify (or any music app) at last.fm/settings/applications")
-                RaccoonButton(text = "Open Last.fm Settings", small = true, onClick = {
-                    context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://www.last.fm/settings/applications")))
-                })
-
-                // Step 3
-                SetupStep(number = "3", text = "Enter your Last.fm username below:")
-                RaccoonTextField(
-                    value = username,
-                    onValueChange = { username = it },
-                    placeholder = "Your Last.fm username",
-                    modifier = Modifier.fillMaxWidth()
-                )
-
+                SetupStep("1", "Create a free account at last.fm/join")
+                RaccoonButton(text = "Open last.fm/join", small = true, onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://www.last.fm/join"))) })
+                SetupStep("2", "Connect Spotify (or any music app) at last.fm/settings/applications")
+                RaccoonButton(text = "Open Last.fm Settings", small = true, onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://www.last.fm/settings/applications"))) })
+                SetupStep("3", "Enter your Last.fm username below:")
+                RaccoonTextField(value = username, onValueChange = { username = it }, placeholder = "Your Last.fm username", modifier = Modifier.fillMaxWidth())
                 Text("That's it! OSC Raccoon will automatically show whatever you're listening to.", color = GreenPrimary.copy(alpha = 0.6f), fontSize = 11.sp, fontFamily = FontFamily.Monospace, lineHeight = 16.sp)
 
                 HorizontalDivider(color = GreenPrimary.copy(alpha = 0.3f))
 
+                Text("VRChat Setup", color = GreenPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                SetupStep("4", "In VRChat, open the main menu → OSC → enable OSC.")
+                SetupStep("5", "Back in this app, press ▶ Start to begin sending to your chatbox.")
+
+                HorizontalDivider(color = GreenPrimary.copy(alpha = 0.3f))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    RaccoonButton(
-                        text = "Connect",
-                        onClick = { if (username.isNotBlank()) onConfirm(username.trim()) },
-                        highlighted = true
-                    )
-                    if (currentUsername.isNotEmpty()) {
-                        RaccoonButton(text = "Cancel", onClick = onDismiss)
-                    }
+                    RaccoonButton(text = "Connect", onClick = { if (username.isNotBlank()) onConfirm(username.trim()) }, highlighted = true)
+                    if (currentUsername.isNotEmpty()) RaccoonButton(text = "Cancel", onClick = onDismiss)
                 }
             }
         }
@@ -306,7 +284,11 @@ fun LeftPanel(modifier: Modifier, messageTemplate: String, onTemplateChange: (St
 @Composable
 fun RightPanel(modifier: Modifier, cyclingMessages: List<String>, cycleInterval: Int, onMessagesChange: (List<String>) -> Unit, onIntervalChange: (Int) -> Unit) {
     var newMessage by remember { mutableStateOf("") }
-    PanelCard(modifier = modifier, title = "Cycling Messages  ({cycling})") {
+    // Drag state
+    var dragFromIndex by remember { mutableStateOf(-1) }
+    var dragToIndex by remember { mutableStateOf(-1) }
+
+    PanelCard(modifier = modifier, title = "Cycling Messages {cycling}") {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             Text("Cycle every:", color = GreenPrimary, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
             Slider(
@@ -329,14 +311,63 @@ fun RightPanel(modifier: Modifier, cyclingMessages: List<String>, cycleInterval:
                 Text("No cycling messages yet.\nAdd one above!\n\nUse {cycling} in your\ntemplate to place them.", color = GreenPrimary.copy(alpha = 0.5f), fontSize = 12.sp, fontFamily = FontFamily.Monospace, textAlign = TextAlign.Center)
             }
         } else {
+            // Item heights for drag calculation
+            val itemHeightPx = remember { mutableStateOf(80f) }
+
             LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                itemsIndexed(cyclingMessages) { index, message ->
-                    CyclingMessageRow(
-                        message = message, index = index,
-                        onDelete = { onMessagesChange(cyclingMessages.toMutableList().also { it.removeAt(index) }) },
-                        onMoveUp = { if (index > 0) { val l = cyclingMessages.toMutableList(); val t = l[index]; l[index] = l[index-1]; l[index-1] = t; onMessagesChange(l) } },
-                        onMoveDown = { if (index < cyclingMessages.size - 1) { val l = cyclingMessages.toMutableList(); val t = l[index]; l[index] = l[index+1]; l[index+1] = t; onMessagesChange(l) } }
-                    )
+                itemsIndexed(cyclingMessages, key = { _, msg -> msg + cyclingMessages.indexOf(msg) }) { index, message ->
+                    val isDragging = dragFromIndex == index
+                    val isTarget = dragToIndex == index && dragFromIndex != index
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onGloballyPositioned { itemHeightPx.value = it.size.height.toFloat() + 6f }
+                    ) {
+                        CyclingMessageRow(
+                            message = message,
+                            index = index,
+                            isDragging = isDragging,
+                            isTarget = isTarget,
+                            onDelete = {
+                                val newList = cyclingMessages.toMutableList()
+                                if (index < newList.size) {
+                                    newList.removeAt(index)
+                                    onMessagesChange(newList)
+                                }
+                            },
+                            onMoveUp = {
+                                if (index > 0) {
+                                    val l = cyclingMessages.toMutableList()
+                                    val t = l[index]; l[index] = l[index-1]; l[index-1] = t
+                                    onMessagesChange(l)
+                                }
+                            },
+                            onMoveDown = {
+                                if (index < cyclingMessages.size - 1) {
+                                    val l = cyclingMessages.toMutableList()
+                                    val t = l[index]; l[index] = l[index+1]; l[index+1] = t
+                                    onMessagesChange(l)
+                                }
+                            },
+                            onDragStart = { dragFromIndex = index; dragToIndex = index },
+                            onDrag = { deltaY ->
+                                val steps = (deltaY / itemHeightPx.value).toInt()
+                                val newTarget = (dragFromIndex + steps).coerceIn(0, cyclingMessages.size - 1)
+                                dragToIndex = newTarget
+                            },
+                            onDragEnd = {
+                                if (dragFromIndex >= 0 && dragToIndex >= 0 && dragFromIndex != dragToIndex) {
+                                    val l = cyclingMessages.toMutableList()
+                                    val item = l.removeAt(dragFromIndex)
+                                    l.add(dragToIndex.coerceIn(0, l.size), item)
+                                    onMessagesChange(l)
+                                }
+                                dragFromIndex = -1
+                                dragToIndex = -1
+                            }
+                        )
+                    }
                 }
             }
         }
@@ -344,11 +375,45 @@ fun RightPanel(modifier: Modifier, cyclingMessages: List<String>, cycleInterval:
 }
 
 @Composable
-fun CyclingMessageRow(message: String, index: Int, onDelete: () -> Unit, onMoveUp: () -> Unit, onMoveDown: () -> Unit) {
+fun CyclingMessageRow(
+    message: String, index: Int,
+    isDragging: Boolean = false, isTarget: Boolean = false,
+    onDelete: () -> Unit, onMoveUp: () -> Unit, onMoveDown: () -> Unit,
+    onDragStart: () -> Unit = {}, onDrag: (Float) -> Unit = {}, onDragEnd: () -> Unit = {}
+) {
+    var totalDragY by remember { mutableStateOf(0f) }
+
     Row(
-        modifier = Modifier.fillMaxWidth().border(1.dp, GreenPrimary.copy(alpha = 0.3f), RoundedCornerShape(6.dp)).padding(horizontal = 8.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(
+                1.dp,
+                when { isDragging -> GreenPrimary; isTarget -> GreenPrimary.copy(alpha = 0.8f); else -> GreenPrimary.copy(alpha = 0.3f) },
+                RoundedCornerShape(6.dp)
+            )
+            .background(
+                when { isDragging -> GreenPrimary.copy(alpha = 0.15f); isTarget -> GreenPrimary.copy(alpha = 0.08f); else -> Color.Transparent },
+                RoundedCornerShape(6.dp)
+            )
+            .padding(horizontal = 8.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
+        // Drag handle
+        Text(
+            "⠿",
+            color = GreenPrimary.copy(alpha = 0.5f),
+            fontSize = 14.sp,
+            modifier = Modifier
+                .pointerInput(index) {
+                    detectDragGesturesAfterLongPress(
+                        onDragStart = { totalDragY = 0f; onDragStart() },
+                        onDrag = { _, dragAmount -> totalDragY += dragAmount.y; onDrag(totalDragY) },
+                        onDragEnd = { onDragEnd() },
+                        onDragCancel = { onDragEnd() }
+                    )
+                }
+        )
         Text("${index+1}.", color = GreenPrimary.copy(alpha = 0.5f), fontSize = 11.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.width(20.dp))
         Text(message, color = GreenPrimary, fontSize = 12.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.weight(1f))
         IconButton(onClick = onMoveUp, modifier = Modifier.size(28.dp)) { Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Up", tint = GreenPrimary.copy(alpha = 0.7f)) }
@@ -362,14 +427,10 @@ fun NowPlayingCard(nowPlaying: NowPlaying) {
     Box(modifier = Modifier.fillMaxWidth().border(1.dp, GreenPrimary.copy(alpha = 0.4f), RoundedCornerShape(6.dp)).padding(10.dp)) {
         Column {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (nowPlaying.isPlaying) {
-                    Text("▶", color = GreenPrimary, fontSize = 10.sp)
-                }
+                if (nowPlaying.isPlaying) Text("▶", color = GreenPrimary, fontSize = 10.sp)
                 Text(if (nowPlaying.title.isNotEmpty()) nowPlaying.title else "Nothing Playing", color = GreenPrimary, fontSize = 14.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
             }
-            if (nowPlaying.artist.isNotEmpty()) {
-                Text(nowPlaying.artist, color = GreenPrimary.copy(alpha = 0.8f), fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-            }
+            if (nowPlaying.artist.isNotEmpty()) Text(nowPlaying.artist, color = GreenPrimary.copy(alpha = 0.8f), fontSize = 12.sp, fontFamily = FontFamily.Monospace)
         }
     }
 }
@@ -416,6 +477,14 @@ fun RaccoonTextArea(value: String, onValueChange: (String) -> Unit, label: Strin
         value = value, onValueChange = onValueChange,
         textStyle = TextStyle(color = GreenPrimary, fontSize = 12.sp, fontFamily = FontFamily.Monospace, lineHeight = 18.sp),
         cursorBrush = SolidColor(GreenPrimary),
+        // Tell the Quest keyboard this is a multiline field so Enter = newline not Done
+        keyboardOptions = KeyboardOptions(
+            keyboardType = KeyboardType.Text,
+            imeAction = ImeAction.Default
+        ),
+        keyboardActions = KeyboardActions(
+            onAny = { onValueChange(value + "\n") }
+        ),
         modifier = modifier.border(1.dp, GreenPrimary.copy(alpha = 0.5f), RoundedCornerShape(6.dp)).padding(10.dp),
         decorationBox = { inner -> if (value.isEmpty()) Text(label, color = GreenPrimary.copy(alpha = 0.35f), fontSize = 12.sp, fontFamily = FontFamily.Monospace); inner() }
     )
