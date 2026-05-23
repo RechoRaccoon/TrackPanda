@@ -279,7 +279,7 @@ fun LastFmSetupDialog(currentUsername: String, onConfirm: (String) -> Unit, onDi
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("Connect Last.fm", color = GreenPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                 HorizontalDivider(color = GreenPrimary.copy(alpha = 0.3f))
-                Text("Last.fm tracks your Spotify listening automatically — for free.", color = GreenPrimary, fontSize = 12.sp, fontFamily = FontFamily.Monospace, lineHeight = 18.sp)
+                Text("Last.fm can track what you're listening to on Spotify and send that info to OSCRaccoon, which sends that info to your VRChat chatbox through OSC.", color = GreenPrimary, fontSize = 12.sp, fontFamily = FontFamily.Monospace, lineHeight = 18.sp)
                 SetupStep("1", "Create a free account at last.fm/join")
                 RaccoonButton(text = "Open last.fm/join", small = true, onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://www.last.fm/join"))) })
                 SetupStep("2", "Connect Spotify at last.fm/settings/applications")
