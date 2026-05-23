@@ -37,7 +37,7 @@ object AppPreferences {
         prefs(context).edit().putInt(KEY_INTERVAL, interval).apply()
 
     fun loadInterval(context: Context): Int =
-        prefs(context).getInt(KEY_INTERVAL, 5)
+        prefs(context).getInt(KEY_INTERVAL, 1)
 
     fun saveHiddenMessages(context: Context, hidden: Set<Int>) =
         prefs(context).edit().putString("hidden_messages", hidden.joinToString(",")).apply()

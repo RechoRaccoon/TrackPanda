@@ -6,7 +6,6 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.*
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -27,8 +26,6 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -41,6 +38,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.TextFieldValue
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 
@@ -73,7 +71,7 @@ fun DrawScope.drawCheckerboard(colorA: Color = BrownDark, colorB: Color = BrownL
     }
 }
 
-val DEFAULT_CYCLING = listOf("Join the Raccoon Army! 🦝", "Follow @RechoRaccoon on all socials!")
+val DEFAULT_CYCLING = listOf("💚🦝💚🦝💚🦝💚🦝", "🦝💚🦝💚🦝💚🦝💚")
 
 @Composable
 fun OSCRaccoonApp() {
@@ -308,20 +306,37 @@ fun SetupStep(number: String, text: String) {
 
 @Composable
 fun LeftPanel(modifier: Modifier, messageTemplate: String, onTemplateChange: (String) -> Unit, nowPlaying: NowPlaying, livePreview: String, lastFmUsername: String) {
+    // Use TextFieldValue so we can track cursor position for the new line button
+    var fieldValue by remember(messageTemplate) { mutableStateOf(TextFieldValue(messageTemplate)) }
+
     PanelCard(modifier = modifier, title = "Message Template") {
         Row(modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
             Text("Placeholders:  {song}  {artist}  {cycling}  {time}", color = GreenPrimary, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
             Box(
                 modifier = Modifier
                     .border(1.dp, GreenPrimary, RoundedCornerShape(4.dp))
-                    .clickable { onTemplateChange(messageTemplate + "\n") }
+                    .clickable {
+                        // Insert newline at cursor position
+                        val cursor = fieldValue.selection.end.coerceIn(0, fieldValue.text.length)
+                        val before = fieldValue.text.substring(0, cursor)
+                        val after = fieldValue.text.substring(cursor)
+                        val newText = "$before\n$after"
+                        val newCursor = cursor + 1
+                        fieldValue = TextFieldValue(text = newText, selection = androidx.compose.ui.text.TextRange(newCursor))
+                        onTemplateChange(newText)
+                    }
                     .padding(horizontal = 6.dp, vertical = 2.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Text("↵ New Line", color = GreenPrimary, fontSize = 10.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
             }
         }
-        RaccoonTextArea(value = messageTemplate, onValueChange = onTemplateChange, label = "Message template", modifier = Modifier.fillMaxWidth().height(100.dp))
+        RaccoonTextAreaValue(
+            value = fieldValue,
+            onValueChange = { fieldValue = it; onTemplateChange(it.text) },
+            label = "Message template",
+            modifier = Modifier.fillMaxWidth().height(100.dp)
+        )
         Spacer(Modifier.height(12.dp))
         SectionLabel("Now Playing" + if (lastFmUsername.isNotEmpty()) " (via Last.fm)" else "")
         NowPlayingCard(nowPlaying)
@@ -336,58 +351,31 @@ fun LeftPanel(modifier: Modifier, messageTemplate: String, onTemplateChange: (St
 @Composable
 fun RightPanel(modifier: Modifier, cyclingMessages: List<String>, hiddenMessages: Set<Int>, cycleInterval: Int, isRandom: Boolean, onRandomChange: (Boolean) -> Unit, onHiddenChange: (Set<Int>) -> Unit, onMessagesChange: (List<String>) -> Unit, onIntervalChange: (Int) -> Unit) {
     var newMessage by remember { mutableStateOf("") }
-    var dragFromIndex by remember { mutableStateOf(-1) }
-    var dragToIndex by remember { mutableStateOf(-1) }
-
-    val itemHeightPx = remember { mutableStateOf(80f) }
 
     // Panel title row with Order/Random toggles on the right
     Column(modifier = modifier.background(BrownMid.copy(alpha = 0.7f), RoundedCornerShape(10.dp)).border(1.dp, GreenPrimary, RoundedCornerShape(10.dp)).padding(12.dp)) {
-        // Title row
         Row(modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
             Text("Cycling Messages {cycling}", color = GreenPrimary, fontSize = 15.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-            // Order / Random toggle buttons side by side
             Row(horizontalArrangement = Arrangement.spacedBy(0.dp)) {
-                // Order button (left)
                 Box(
-                    modifier = Modifier
-                        .height(28.dp)
-                        .background(
-                            if (!isRandom) GreenPrimary else Color.Transparent,
-                            RoundedCornerShape(topStart = 6.dp, bottomStart = 6.dp)
-                        )
+                    modifier = Modifier.height(28.dp).background(if (!isRandom) GreenPrimary else Color.Transparent, RoundedCornerShape(topStart = 6.dp, bottomStart = 6.dp))
                         .border(1.dp, if (!isRandom) GreenPrimary else GreenPrimary.copy(alpha = 0.4f), RoundedCornerShape(topStart = 6.dp, bottomStart = 6.dp))
-                        .clickable { onRandomChange(false) }
-                        .padding(horizontal = 10.dp),
+                        .clickable { onRandomChange(false) }.padding(horizontal = 10.dp),
                     contentAlignment = Alignment.Center
-                ) {
-                    Text("In Order", color = if (!isRandom) BrownDark else GreenPrimary.copy(alpha = 0.4f), fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-                }
-                // Random button (right)
+                ) { Text("In Order", color = if (!isRandom) BrownDark else GreenPrimary.copy(alpha = 0.4f), fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace) }
                 Box(
-                    modifier = Modifier
-                        .height(28.dp)
-                        .background(
-                            if (isRandom) GreenPrimary else Color.Transparent,
-                            RoundedCornerShape(topEnd = 6.dp, bottomEnd = 6.dp)
-                        )
+                    modifier = Modifier.height(28.dp).background(if (isRandom) GreenPrimary else Color.Transparent, RoundedCornerShape(topEnd = 6.dp, bottomEnd = 6.dp))
                         .border(1.dp, if (isRandom) GreenPrimary else GreenPrimary.copy(alpha = 0.4f), RoundedCornerShape(topEnd = 6.dp, bottomEnd = 6.dp))
-                        .clickable { onRandomChange(true) }
-                        .padding(horizontal = 10.dp),
+                        .clickable { onRandomChange(true) }.padding(horizontal = 10.dp),
                     contentAlignment = Alignment.Center
-                ) {
-                    Text("Random", color = if (isRandom) BrownDark else GreenPrimary.copy(alpha = 0.4f), fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-                }
+                ) { Text("Random", color = if (isRandom) BrownDark else GreenPrimary.copy(alpha = 0.4f), fontSize = 10.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace) }
             }
         }
 
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             Text("Cycle every:", color = GreenPrimary, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-            Slider(
-                value = cycleInterval.toFloat(), onValueChange = { onIntervalChange(it.toInt()) },
-                valueRange = 1f..30f, steps = 28, modifier = Modifier.weight(1f),
-                colors = SliderDefaults.colors(thumbColor = GreenPrimary, activeTrackColor = GreenPrimary, inactiveTrackColor = GreenPrimary.copy(alpha = 0.3f))
-            )
+            Slider(value = cycleInterval.toFloat(), onValueChange = { onIntervalChange(it.toInt()) }, valueRange = 1f..30f, steps = 28, modifier = Modifier.weight(1f),
+                colors = SliderDefaults.colors(thumbColor = GreenPrimary, activeTrackColor = GreenPrimary, inactiveTrackColor = GreenPrimary.copy(alpha = 0.3f)))
             Text("${cycleInterval}s", color = GreenPrimary, fontSize = 12.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.width(32.dp))
         }
         Spacer(Modifier.height(8.dp))
@@ -403,156 +391,55 @@ fun RightPanel(modifier: Modifier, cyclingMessages: List<String>, hiddenMessages
                 Text("No cycling messages yet.\nAdd one above!\n\nUse {cycling} in your\ntemplate to place them.", color = GreenPrimary.copy(alpha = 0.5f), fontSize = 12.sp, fontFamily = FontFamily.Monospace, textAlign = TextAlign.Center)
             }
         } else {
-            LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(0.dp)) {
+            LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 itemsIndexed(cyclingMessages, key = { idx, _ -> idx }) { index, message ->
-                    val isDragging = dragFromIndex == index
                     val isHidden = hiddenMessages.contains(index)
-                    var totalDragY by remember { mutableStateOf(0f) }
                     var isEditing by remember { mutableStateOf(false) }
                     var editText by remember(message) { mutableStateOf(message) }
 
-                    val showGapAbove = dragFromIndex >= 0 && !isDragging && dragToIndex == index && dragFromIndex > index
-                    val showGapBelow = dragFromIndex >= 0 && !isDragging && dragToIndex == index && dragFromIndex < index
-
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        if (showGapAbove) {
-                            Box(modifier = Modifier.fillMaxWidth().height(3.dp).padding(horizontal = 4.dp).background(GreenPrimary, RoundedCornerShape(2.dp)))
-                            Spacer(Modifier.height(4.dp))
-                        } else {
-                            Spacer(Modifier.height(3.dp))
-                        }
-
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .onGloballyPositioned { itemHeightPx.value = it.size.height.toFloat() + 6f }
-                                .border(
-                                    1.dp,
-                                    when { isHidden -> GreenPrimary.copy(alpha = 0.25f); else -> GreenPrimary },
-                                    RoundedCornerShape(6.dp)
-                                )
-                                .background(
-                                    when { isEditing -> GreenPrimary.copy(alpha = 0.1f); isDragging -> GreenPrimary.copy(alpha = 0.05f); else -> Color.Transparent },
-                                    RoundedCornerShape(6.dp)
-                                )
-                                .then(
-                                    if (!isEditing) Modifier.pointerInput(index) {
-                                        detectDragGestures(
-                                            onDragStart = { _: Offset ->
-                                                totalDragY = 0f
-                                                dragFromIndex = index
-                                                dragToIndex = index
-                                            },
-                                            onDrag = { _: androidx.compose.ui.input.pointer.PointerInputChange, dragAmount: Offset ->
-                                                totalDragY += dragAmount.y
-                                                // Clamp to valid range using original list size snapshot
-                                                val maxIdx = cyclingMessages.size - 1
-                                                val steps = (totalDragY / itemHeightPx.value).toInt()
-                                                dragToIndex = (dragFromIndex + steps).coerceIn(0, maxIdx)
-                                            },
-                                            onDragEnd = {
-                                                val from = dragFromIndex
-                                                val to = dragToIndex
-                                                // Reset BEFORE mutating list to prevent recompose race
-                                                dragFromIndex = -1
-                                                dragToIndex = -1
-                                                if (from >= 0 && to >= 0 && from != to
-                                                    && from < cyclingMessages.size
-                                                    && to < cyclingMessages.size) {
-                                                    val l = cyclingMessages.toMutableList()
-                                                    val item = l.removeAt(from)
-                                                    l.add(to.coerceIn(0, l.size), item)
-                                                    // Remap hidden indices after move
-                                                    val newHidden = hiddenMessages.mapNotNull { h ->
-                                                        when {
-                                                            h == from -> to
-                                                            from < to && h in (from+1)..to -> h - 1
-                                                            from > to && h in to until from -> h + 1
-                                                            else -> h
-                                                        }
-                                                    }.toSet()
-                                                    onHiddenChange(newHidden)
-                                                    onMessagesChange(l)
-                                                }
-                                            },
-                                            onDragCancel = { dragFromIndex = -1; dragToIndex = -1 }
-                                        )
-                                    } else Modifier
-                                )
-                                .padding(horizontal = 8.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            Text("${index+1}.", color = if (isHidden) GreenPrimary.copy(alpha = 0.25f) else GreenPrimary, fontSize = 11.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.width(20.dp))
-
-                            if (isEditing) {
-                                BasicTextField(
-                                    value = editText,
-                                    onValueChange = { editText = it },
-                                    singleLine = true,
-                                    textStyle = TextStyle(color = GreenPrimary, fontSize = 12.sp, fontFamily = FontFamily.Monospace),
-                                    cursorBrush = SolidColor(GreenPrimary),
-                                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                                    keyboardActions = KeyboardActions(onDone = {
-                                        if (editText.isNotBlank()) {
-                                            val l = cyclingMessages.toMutableList()
-                                            l[index] = editText.trim()
-                                            onMessagesChange(l)
-                                        }
-                                        isEditing = false
-                                    }),
-                                    modifier = Modifier.weight(1f)
-                                )
-                                IconButton(onClick = {
-                                    if (editText.isNotBlank()) {
-                                        val l = cyclingMessages.toMutableList()
-                                        l[index] = editText.trim()
-                                        onMessagesChange(l)
-                                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth()
+                            .border(1.dp, if (isHidden) GreenPrimary.copy(alpha = 0.25f) else GreenPrimary, RoundedCornerShape(6.dp))
+                            .background(if (isEditing) GreenPrimary.copy(alpha = 0.1f) else Color.Transparent, RoundedCornerShape(6.dp))
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text("${index+1}.", color = if (isHidden) GreenPrimary.copy(alpha = 0.25f) else GreenPrimary, fontSize = 11.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.width(20.dp))
+                        if (isEditing) {
+                            BasicTextField(
+                                value = editText, onValueChange = { editText = it }, singleLine = true,
+                                textStyle = TextStyle(color = GreenPrimary, fontSize = 12.sp, fontFamily = FontFamily.Monospace),
+                                cursorBrush = SolidColor(GreenPrimary),
+                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                                keyboardActions = KeyboardActions(onDone = {
+                                    if (editText.isNotBlank()) { val l = cyclingMessages.toMutableList(); l[index] = editText.trim(); onMessagesChange(l) }
                                     isEditing = false
-                                }, modifier = Modifier.size(28.dp)) {
-                                    Icon(Icons.Default.Check, contentDescription = "Save", tint = GreenPrimary)
-                                }
-                            } else {
-                                val isHidden = hiddenMessages.contains(index)
-                                Text(
-                                    message,
-                                    color = if (isDragging || isHidden) GreenPrimary.copy(alpha = 0.35f) else GreenPrimary,
-                                    fontSize = 12.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    modifier = Modifier.weight(1f).clickable { isEditing = true; editText = message }
-                                )
-                                // Hide/show toggle button
-                                IconButton(onClick = {
-                                    val newHidden = hiddenMessages.toMutableSet()
-                                    if (isHidden) newHidden.remove(index) else newHidden.add(index)
-                                    onHiddenChange(newHidden)
-                                }, modifier = Modifier.size(28.dp)) {
-                                    Icon(
-                                        if (isHidden) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                        contentDescription = if (isHidden) "Show" else "Hide",
-                                        tint = if (isHidden) GreenPrimary.copy(alpha = 0.35f) else GreenPrimary.copy(alpha = 0.7f)
-                                    )
-                                }
-                                IconButton(onClick = {
-                                    if (index > 0) { val l = cyclingMessages.toMutableList(); val t = l[index]; l[index] = l[index-1]; l[index-1] = t; onMessagesChange(l) }
-                                }, modifier = Modifier.size(28.dp)) { Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Up", tint = GreenPrimary.copy(alpha = 0.7f)) }
-                                IconButton(onClick = {
-                                    if (index < cyclingMessages.size - 1) { val l = cyclingMessages.toMutableList(); val t = l[index]; l[index] = l[index+1]; l[index+1] = t; onMessagesChange(l) }
-                                }, modifier = Modifier.size(28.dp)) { Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Down", tint = GreenPrimary.copy(alpha = 0.7f)) }
-                                IconButton(onClick = {
-                                    val newList = cyclingMessages.toMutableList()
-                                    if (index < newList.size) { newList.removeAt(index); onMessagesChange(newList) }
-                                }, modifier = Modifier.size(28.dp)) { Icon(Icons.Default.Close, contentDescription = "Delete", tint = GreenPrimary.copy(alpha = 0.7f)) }
-                            }
-                        }
-
-                        // Gap line below (only show on last item when dragging to end)
-                        if (showGapBelow) {
-                            Spacer(Modifier.height(4.dp))
-                            Box(modifier = Modifier.fillMaxWidth().height(3.dp).padding(horizontal = 4.dp).background(GreenPrimary, RoundedCornerShape(2.dp)))
+                                }),
+                                modifier = Modifier.weight(1f)
+                            )
+                            IconButton(onClick = {
+                                if (editText.isNotBlank()) { val l = cyclingMessages.toMutableList(); l[index] = editText.trim(); onMessagesChange(l) }
+                                isEditing = false
+                            }, modifier = Modifier.size(28.dp)) { Icon(Icons.Default.Check, contentDescription = "Save", tint = GreenPrimary) }
                         } else {
-                            Spacer(Modifier.height(3.dp))
+                            Text(message, color = if (isHidden) GreenPrimary.copy(alpha = 0.35f) else GreenPrimary, fontSize = 12.sp, fontFamily = FontFamily.Monospace,
+                                modifier = Modifier.weight(1f).clickable { isEditing = true; editText = message })
+                            IconButton(onClick = {
+                                val newHidden = hiddenMessages.toMutableSet()
+                                if (isHidden) newHidden.remove(index) else newHidden.add(index)
+                                onHiddenChange(newHidden)
+                            }, modifier = Modifier.size(28.dp)) {
+                                Icon(if (isHidden) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    contentDescription = if (isHidden) "Show" else "Hide",
+                                    tint = if (isHidden) GreenPrimary.copy(alpha = 0.35f) else GreenPrimary.copy(alpha = 0.7f))
+                            }
+                            IconButton(onClick = { if (index > 0) { val l = cyclingMessages.toMutableList(); val t = l[index]; l[index] = l[index-1]; l[index-1] = t; onMessagesChange(l) } }, modifier = Modifier.size(28.dp)) {
+                                Icon(Icons.Default.KeyboardArrowUp, contentDescription = "Up", tint = GreenPrimary.copy(alpha = 0.7f)) }
+                            IconButton(onClick = { if (index < cyclingMessages.size - 1) { val l = cyclingMessages.toMutableList(); val t = l[index]; l[index] = l[index+1]; l[index+1] = t; onMessagesChange(l) } }, modifier = Modifier.size(28.dp)) {
+                                Icon(Icons.Default.KeyboardArrowDown, contentDescription = "Down", tint = GreenPrimary.copy(alpha = 0.7f)) }
+                            IconButton(onClick = { val nl = cyclingMessages.toMutableList(); if (index < nl.size) { nl.removeAt(index); onMessagesChange(nl) } }, modifier = Modifier.size(28.dp)) {
+                                Icon(Icons.Default.Close, contentDescription = "Delete", tint = GreenPrimary.copy(alpha = 0.7f)) }
                         }
                     }
                 }
@@ -618,14 +505,28 @@ fun RaccoonTextArea(value: String, onValueChange: (String) -> Unit, label: Strin
         value = value, onValueChange = onValueChange,
         textStyle = TextStyle(color = GreenPrimary, fontSize = 12.sp, fontFamily = FontFamily.Monospace, lineHeight = 18.sp),
         cursorBrush = SolidColor(GreenPrimary),
-        keyboardOptions = KeyboardOptions(
-            keyboardType = KeyboardType.Text,
-            imeAction = ImeAction.Default
-        ),
-        keyboardActions = KeyboardActions(
-            onAny = { onValueChange(value + "\n") }
-        ),
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Default),
+        keyboardActions = KeyboardActions(onAny = { onValueChange(value + "\n") }),
         modifier = modifier.border(1.dp, GreenPrimary, RoundedCornerShape(6.dp)).padding(10.dp),
         decorationBox = { inner -> if (value.isEmpty()) Text(label, color = GreenPrimary.copy(alpha = 0.4f), fontSize = 12.sp, fontFamily = FontFamily.Monospace); inner() }
+    )
+}
+
+@Composable
+fun RaccoonTextAreaValue(value: TextFieldValue, onValueChange: (TextFieldValue) -> Unit, label: String, modifier: Modifier = Modifier) {
+    BasicTextField(
+        value = value, onValueChange = onValueChange,
+        textStyle = TextStyle(color = GreenPrimary, fontSize = 12.sp, fontFamily = FontFamily.Monospace, lineHeight = 18.sp),
+        cursorBrush = SolidColor(GreenPrimary),
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Default),
+        keyboardActions = KeyboardActions(onAny = {
+            val cursor = value.selection.end.coerceIn(0, value.text.length)
+            val before = value.text.substring(0, cursor)
+            val after = value.text.substring(cursor)
+            val newText = "$before\n$after"
+            onValueChange(TextFieldValue(text = newText, selection = androidx.compose.ui.text.TextRange(cursor + 1)))
+        }),
+        modifier = modifier.border(1.dp, GreenPrimary, RoundedCornerShape(6.dp)).padding(10.dp),
+        decorationBox = { inner -> if (value.text.isEmpty()) Text(label, color = GreenPrimary.copy(alpha = 0.4f), fontSize = 12.sp, fontFamily = FontFamily.Monospace); inner() }
     )
 }
