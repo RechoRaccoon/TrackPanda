@@ -279,19 +279,19 @@ fun LastFmSetupDialog(currentUsername: String, onConfirm: (String) -> Unit, onDi
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("Connect Last.fm", color = GreenPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                 HorizontalDivider(color = GreenPrimary.copy(alpha = 0.3f))
-                Text("Last.fm tracks your music automatically from Spotify, YouTube Music, and more — for free.", color = GreenPrimary, fontSize = 12.sp, fontFamily = FontFamily.Monospace, lineHeight = 18.sp)
+                Text("Last.fm tracks your Spotify listening automatically — for free.", color = GreenPrimary, fontSize = 12.sp, fontFamily = FontFamily.Monospace, lineHeight = 18.sp)
                 SetupStep("1", "Create a free account at last.fm/join")
                 RaccoonButton(text = "Open last.fm/join", small = true, onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://www.last.fm/join"))) })
-                SetupStep("2", "Connect Spotify (or any music app) at last.fm/settings/applications")
+                SetupStep("2", "Connect Spotify at last.fm/settings/applications")
                 RaccoonButton(text = "Open Last.fm Settings", small = true, onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse("https://www.last.fm/settings/applications"))) })
                 SetupStep("3", "Enter your Last.fm username below:")
                 RaccoonTextField(value = username, onValueChange = { username = it }, placeholder = "Your Last.fm username", modifier = Modifier.fillMaxWidth())
-                Text("That's it! OSC Raccoon will automatically show whatever you're listening to.", color = GreenPrimary, fontSize = 12.sp, fontFamily = FontFamily.Monospace, lineHeight = 16.sp)
+                Text("That's it! OSCRaccoon will automatically show whatever you're listening to.", color = GreenPrimary, fontSize = 12.sp, fontFamily = FontFamily.Monospace, lineHeight = 16.sp)
 
                 HorizontalDivider(color = GreenPrimary.copy(alpha = 0.3f))
 
                 Text("VRChat Setup", color = GreenPrimary, fontSize = 13.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
-                SetupStep("4", "In VRChat, open the main menu → OSC → enable OSC.")
+                SetupStep("4", "In VRChat, enable OSC in your action menu or in settings.")
                 SetupStep("5", "Back in this app, press ▶ Start to begin sending to your chatbox.")
 
                 HorizontalDivider(color = GreenPrimary.copy(alpha = 0.3f))
