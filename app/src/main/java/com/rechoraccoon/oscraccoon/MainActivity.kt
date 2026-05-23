@@ -17,6 +17,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.ui.geometry.Offset
@@ -267,7 +268,14 @@ fun LastFmSetupDialog(currentUsername: String, onConfirm: (String) -> Unit, onDi
     var username by remember { mutableStateOf(currentUsername) }
     val context = LocalContext.current
     Dialog(onDismissRequest = onDismiss) {
-        Box(modifier = Modifier.width(420.dp).drawBehind { drawCheckerboard() }.border(2.dp, GreenPrimary, RoundedCornerShape(12.dp)).padding(24.dp)) {
+        Box(
+            modifier = Modifier
+                .width(420.dp)
+                .clip(RoundedCornerShape(12.dp))
+                .drawBehind { drawCheckerboard() }
+                .border(2.dp, GreenPrimary, RoundedCornerShape(12.dp))
+                .padding(24.dp)
+        ) {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("Connect Last.fm", color = GreenPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                 HorizontalDivider(color = GreenPrimary.copy(alpha = 0.3f))
