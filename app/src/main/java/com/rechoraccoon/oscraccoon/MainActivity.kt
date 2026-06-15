@@ -43,6 +43,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.zIndex
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import java.util.UUID
@@ -58,9 +59,12 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         LocalMediaState.init(this)
-        val savedUsername = AppPreferences.loadUsername(this)
-        if (savedUsername.isNotEmpty()) LastFmService.startPolling(savedUsername)
-        // Restore local folder
+        val sourceMode = AppPreferences.loadSourceMode(this)
+        // Only start LastFM polling if in LASTFM mode — fixes bug where local mode still shows LastFM data
+        if (sourceMode == "LASTFM") {
+            val savedUsername = AppPreferences.loadUsername(this)
+            if (savedUsername.isNotEmpty()) LastFmService.startPolling(savedUsername)
+        }
         val folderUri = AppPreferences.loadLocalFolderUri(this)
         if (folderUri.isNotEmpty()) {
             try {
@@ -122,12 +126,13 @@ fun OSCRaccoonApp() {
     var presets by remember { mutableStateOf(AppPreferences.loadPresets(context)) }
     var isRunning by remember { mutableStateOf(false) }
     var showSetup by remember { mutableStateOf(false) }
-    var nowPlaying by remember { mutableStateOf(NowPlaying()) }
+    var lastFmNowPlaying by remember { mutableStateOf(NowPlaying()) }
     var previewCycleIndex by remember { mutableStateOf(0) }
     var isRandom by remember { mutableStateOf(false) }
     var showIconOverlay by remember { mutableStateOf(false) }
     var showPresetsDropdown by remember { mutableStateOf(false) }
     var showTracksPage by remember { mutableStateOf(false) }
+    var showQueue by remember { mutableStateOf(false) }
     val random = remember { java.util.Random() }
 
     val folderPickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
@@ -141,11 +146,23 @@ fun OSCRaccoonApp() {
         }
     }
 
+    // Source-aware now playing: use LastFM data only in LASTFM mode
+    val nowPlaying = if (sourceMode == "LOCAL") {
+        LocalMediaState.currentTrack?.let { NowPlaying(it.title, it.artist, LocalMediaState.isPlaying) } ?: NowPlaying()
+    } else {
+        lastFmNowPlaying
+    }
+
     val visibleMessages = remember(cyclingMessages) { cyclingMessages.filter { !it.isHidden }.map { it.text } }
 
-    LaunchedEffect(Unit) { LastFmService.nowPlaying.collectLatest { nowPlaying = it } }
+    // Only collect LastFM when in LASTFM mode
+    LaunchedEffect(sourceMode) {
+        if (sourceMode == "LASTFM") {
+            LastFmService.nowPlaying.collectLatest { lastFmNowPlaying = it }
+        }
+    }
 
-    // Position polling for local player
+    // Local player position polling
     LaunchedEffect(Unit) {
         while (true) { LocalMediaState.updatePosition(); delay(500L) }
     }
@@ -185,8 +202,12 @@ fun OSCRaccoonApp() {
                     onSourceModeChange = { mode ->
                         if (mode == sourceMode && mode == "LASTFM") { showSetup = true; return@HeaderBar }
                         sourceMode = mode; AppPreferences.saveSourceMode(context, mode)
-                        if (mode == "LASTFM" && lastFmUsername.isNotEmpty()) LastFmService.startPolling(lastFmUsername)
-                        else if (mode == "LOCAL") LastFmService.stopPolling()
+                        if (mode == "LASTFM") {
+                            if (lastFmUsername.isNotEmpty()) LastFmService.startPolling(lastFmUsername)
+                        } else {
+                            LastFmService.stopPolling()
+                            lastFmNowPlaying = NowPlaying() // clear LastFM data immediately
+                        }
                     },
                     onPresetsClick = { showPresetsDropdown = !showPresetsDropdown },
                     onIconClick = { showIconOverlay = true },
@@ -204,35 +225,6 @@ fun OSCRaccoonApp() {
                     onClearChatbox = { OscSender.clearChatbox() }
                 )
 
-                // Presets dropdown
-                if (showPresetsDropdown) {
-                    PresetsDropdown(
-                        presets = presets,
-                        onSelect = { preset ->
-                            messageTemplate = preset.template
-                            cyclingMessages = preset.messages
-                            AppPreferences.saveTemplate(context, preset.template)
-                            AppPreferences.saveCyclingMessages(context, preset.messages)
-                            showPresetsDropdown = false
-                        },
-                        onCreateNew = {
-                            val newPreset = Preset(UUID.randomUUID().toString(), "Preset ${presets.size + 1}", messageTemplate, cyclingMessages)
-                            val updated = presets + newPreset
-                            presets = updated
-                            AppPreferences.savePresets(context, updated)
-                        },
-                        onRename = { preset, newName ->
-                            val updated = presets.map { if (it.id == preset.id) it.copy(name = newName) else it }
-                            presets = updated; AppPreferences.savePresets(context, updated)
-                        },
-                        onDelete = { preset ->
-                            val updated = presets.filter { it.id != preset.id }
-                            presets = updated; AppPreferences.savePresets(context, updated)
-                        },
-                        onDismiss = { showPresetsDropdown = false }
-                    )
-                }
-
                 Row(modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     LeftPanel(
                         modifier = Modifier.weight(1f).fillMaxHeight(),
@@ -242,7 +234,8 @@ fun OSCRaccoonApp() {
                         lastFmUsername = lastFmUsername, sourceMode = sourceMode,
                         onSetupClick = { showSetup = true },
                         onPickFolder = { folderPickerLauncher.launch(null) },
-                        onShowTracks = { showTracksPage = true }
+                        onShowTracks = { showTracksPage = true },
+                        onShowQueue = { showQueue = !showQueue }
                     )
                     RightPanel(
                         modifier = Modifier.weight(1f).fillMaxHeight(),
@@ -255,6 +248,69 @@ fun OSCRaccoonApp() {
                 }
             }
 
+            // ── Overlays (rendered on top of everything in root Box) ───────
+
+            // Presets dropdown overlay
+            if (showPresetsDropdown) {
+                Box(modifier = Modifier.fillMaxSize().zIndex(10f)) {
+                    // Dismiss layer
+                    Box(modifier = Modifier.fillMaxSize().clickable { showPresetsDropdown = false })
+                    // Dropdown anchored top-right below header
+                    Box(modifier = Modifier.align(Alignment.TopEnd).padding(top = 52.dp, end = 16.dp).width(220.dp).zIndex(11f)
+                        .clip(RoundedCornerShape(8.dp)).drawBehind { drawCheckerboard() }
+                        .border(1.dp, GreenPrimary, RoundedCornerShape(8.dp)).padding(8.dp)) {
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            if (presets.isEmpty()) {
+                                Text("No presets saved.", color = GreenPrimary.copy(alpha = 0.6f), fontSize = 11.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.padding(4.dp))
+                            } else {
+                                presets.forEach { preset ->
+                                    var isRenaming by remember { mutableStateOf(false) }
+                                    var renameText by remember(preset.name) { mutableStateOf(preset.name) }
+                                    Row(modifier = Modifier.fillMaxWidth()
+                                        .border(1.dp, GreenPrimary.copy(alpha = 0.4f), RoundedCornerShape(6.dp))
+                                        .clickable { if (!isRenaming) { messageTemplate = preset.template; cyclingMessages = preset.messages; AppPreferences.saveTemplate(context, preset.template); AppPreferences.saveCyclingMessages(context, preset.messages); showPresetsDropdown = false } }
+                                        .padding(horizontal = 8.dp, vertical = 5.dp),
+                                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                        if (isRenaming) {
+                                            BasicTextField(value = renameText, onValueChange = { renameText = it }, singleLine = true,
+                                                textStyle = TextStyle(color = GreenPrimary, fontSize = 12.sp, fontFamily = FontFamily.Monospace),
+                                                cursorBrush = SolidColor(GreenPrimary),
+                                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                                                keyboardActions = KeyboardActions(onDone = {
+                                                    val updated = presets.map { if (it.id == preset.id) it.copy(name = renameText) else it }
+                                                    presets = updated; AppPreferences.savePresets(context, updated); isRenaming = false
+                                                }), modifier = Modifier.weight(1f))
+                                            IconButton(onClick = {
+                                                val updated = presets.map { if (it.id == preset.id) it.copy(name = renameText) else it }
+                                                presets = updated; AppPreferences.savePresets(context, updated); isRenaming = false
+                                            }, modifier = Modifier.size(22.dp)) { Icon(Icons.Default.Check, null, tint = GreenPrimary, modifier = Modifier.size(14.dp)) }
+                                        } else {
+                                            Text(preset.name, color = GreenPrimary, fontSize = 12.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                            IconButton(onClick = { isRenaming = true }, modifier = Modifier.size(22.dp)) { Icon(Icons.Default.Edit, null, tint = GreenPrimary.copy(alpha = 0.7f), modifier = Modifier.size(12.dp)) }
+                                            IconButton(onClick = { val u = presets.filter { it.id != preset.id }; presets = u; AppPreferences.savePresets(context, u) }, modifier = Modifier.size(22.dp)) { Icon(Icons.Default.Close, null, tint = GreenPrimary.copy(alpha = 0.7f), modifier = Modifier.size(12.dp)) }
+                                        }
+                                    }
+                                }
+                            }
+                            HorizontalDivider(color = GreenPrimary.copy(alpha = 0.3f))
+                            Box(modifier = Modifier.fillMaxWidth().border(1.dp, GreenPrimary, RoundedCornerShape(6.dp))
+                                .clickable {
+                                    val np = Preset(UUID.randomUUID().toString(), "Preset ${presets.size + 1}", messageTemplate, cyclingMessages)
+                                    val u = presets + np; presets = u; AppPreferences.savePresets(context, u)
+                                }.padding(horizontal = 8.dp, vertical = 5.dp)) {
+                                Text("+ Create New Preset", color = GreenPrimary, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Queue overlay
+            if (showQueue) {
+                QueuePanel(onDismiss = { showQueue = false })
+            }
+
+            // Setup dialog
             if (showSetup) {
                 LastFmSetupDialog(
                     currentUsername = lastFmUsername,
@@ -263,12 +319,88 @@ fun OSCRaccoonApp() {
                 )
             }
 
+            // Icon overlay
             if (showIconOverlay) {
                 val icon: ImageBitmap? = remember {
                     try { BitmapFactory.decodeStream(context.assets.open("osc_raccoon_icon.png"))?.asImageBitmap() } catch (e: Exception) { null }
                 }
-                Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.85f)).clickable { showIconOverlay = false }, contentAlignment = Alignment.Center) {
+                Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.85f)).clickable { showIconOverlay = false }.zIndex(20f), contentAlignment = Alignment.Center) {
                     if (icon != null) Image(bitmap = icon, contentDescription = null, modifier = Modifier.fillMaxHeight(), contentScale = androidx.compose.ui.layout.ContentScale.Fit)
+                }
+            }
+        }
+    }
+}
+
+// ── Queue Panel ───────────────────────────────────────────────────────────────
+@Composable
+fun QueuePanel(onDismiss: () -> Unit) {
+    Box(modifier = Modifier.fillMaxSize().zIndex(15f)) {
+        Box(modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.5f)).clickable { onDismiss() })
+        Box(modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight().width(320.dp)
+            .clip(RoundedCornerShape(topStart = 12.dp, bottomStart = 12.dp))
+            .drawBehind { drawCheckerboard() }
+            .border(1.dp, GreenPrimary, RoundedCornerShape(topStart = 12.dp, bottomStart = 12.dp))
+            .padding(12.dp)) {
+            Column(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("Queue", color = GreenPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                    IconButton(onClick = onDismiss) { Icon(Icons.Default.Close, contentDescription = "Close", tint = GreenPrimary) }
+                }
+                HorizontalDivider(color = GreenPrimary.copy(alpha = 0.3f))
+
+                // Priority (manual) queue
+                if (LocalMediaState.manualQueue.isNotEmpty()) {
+                    Text("Up Next (Priority)", color = GreenPrimary, fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                    LocalMediaState.manualQueue.forEachIndexed { i, track ->
+                        Row(modifier = Modifier.fillMaxWidth()
+                            .border(1.dp, GreenPrimary, RoundedCornerShape(6.dp))
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(track.title, color = GreenPrimary, fontSize = 11.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(track.artist, color = GreenPrimary.copy(alpha = 0.7f), fontSize = 9.sp, fontFamily = FontFamily.Monospace, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                            IconButton(onClick = { LocalMediaState.removeFromQueue(i) }, modifier = Modifier.size(24.dp)) {
+                                Icon(Icons.Default.Remove, contentDescription = "Remove", tint = GreenPrimary.copy(alpha = 0.7f), modifier = Modifier.size(16.dp))
+                            }
+                        }
+                    }
+                    HorizontalDivider(color = GreenPrimary.copy(alpha = 0.3f))
+                }
+
+                // Natural playback queue
+                Text("Playing Order", color = GreenPrimary, fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
+                val currentIdx = LocalMediaState.currentIndex
+                LazyColumn(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    val upcomingStart = (currentIdx + 1).coerceAtMost(LocalMediaState.playQueue.size)
+                    itemsIndexed(LocalMediaState.playQueue.drop(upcomingStart)) { i, track ->
+                        val isCurrent = (currentIdx + 1 + i) == currentIdx
+                        Row(modifier = Modifier.fillMaxWidth()
+                            .border(1.dp, GreenPrimary.copy(alpha = 0.4f), RoundedCornerShape(6.dp))
+                            .padding(horizontal = 8.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Text("${upcomingStart + i + 1}.", color = GreenPrimary.copy(alpha = 0.4f), fontSize = 9.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.width(20.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(track.title, color = GreenPrimary, fontSize = 11.sp, fontFamily = FontFamily.Monospace, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(track.artist, color = GreenPrimary.copy(alpha = 0.7f), fontSize = 9.sp, fontFamily = FontFamily.Monospace, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
+                        }
+                    }
+                }
+
+                // Currently playing
+                LocalMediaState.currentTrack?.let { track ->
+                    HorizontalDivider(color = GreenPrimary.copy(alpha = 0.3f))
+                    Text("Now Playing", color = GreenPrimary.copy(alpha = 0.6f), fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                    Row(modifier = Modifier.fillMaxWidth().border(1.dp, GreenPrimary, RoundedCornerShape(6.dp)).background(GreenPrimary.copy(alpha = 0.08f), RoundedCornerShape(6.dp)).padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("▶", color = GreenPrimary, fontSize = 10.sp)
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(track.title, color = GreenPrimary, fontSize = 11.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(track.artist, color = GreenPrimary.copy(alpha = 0.7f), fontSize = 9.sp, fontFamily = FontFamily.Monospace, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
                 }
             }
         }
@@ -293,16 +425,13 @@ fun HeaderBar(isRunning: Boolean, lastFmUsername: String, sourceMode: String,
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             RaccoonButton(text = "▾ Presets", small = true, onClick = onPresetsClick)
-            // Source toggle — tapping active LastFM button opens setup
             Row {
-                Box(modifier = Modifier.height(36.dp)
-                    .background(if (sourceMode == "LASTFM") GreenPrimary else Color.Transparent, RoundedCornerShape(topStart = 6.dp, bottomStart = 6.dp))
+                Box(modifier = Modifier.height(36.dp).background(if (sourceMode == "LASTFM") GreenPrimary else Color.Transparent, RoundedCornerShape(topStart = 6.dp, bottomStart = 6.dp))
                     .border(1.dp, GreenPrimary, RoundedCornerShape(topStart = 6.dp, bottomStart = 6.dp))
                     .clickable { onSourceModeChange("LASTFM") }.padding(horizontal = 12.dp), contentAlignment = Alignment.Center) {
                     Text("Last.fm", color = if (sourceMode == "LASTFM") BrownDark else GreenPrimary, fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
                 }
-                Box(modifier = Modifier.height(36.dp)
-                    .background(if (sourceMode == "LOCAL") GreenPrimary else Color.Transparent, RoundedCornerShape(topEnd = 6.dp, bottomEnd = 6.dp))
+                Box(modifier = Modifier.height(36.dp).background(if (sourceMode == "LOCAL") GreenPrimary else Color.Transparent, RoundedCornerShape(topEnd = 6.dp, bottomEnd = 6.dp))
                     .border(1.dp, GreenPrimary, RoundedCornerShape(topEnd = 6.dp, bottomEnd = 6.dp))
                     .clickable { onSourceModeChange("LOCAL") }.padding(horizontal = 12.dp), contentAlignment = Alignment.Center) {
                     Text("Local", color = if (sourceMode == "LOCAL") BrownDark else GreenPrimary, fontSize = 11.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace)
@@ -314,61 +443,11 @@ fun HeaderBar(isRunning: Boolean, lastFmUsername: String, sourceMode: String,
     }
 }
 
-// ── Presets Dropdown ──────────────────────────────────────────────────────────
-@Composable
-fun PresetsDropdown(presets: List<Preset>, onSelect: (Preset) -> Unit, onCreateNew: () -> Unit,
-    onRename: (Preset, String) -> Unit, onDelete: (Preset) -> Unit, onDismiss: () -> Unit) {
-    Box(modifier = Modifier.fillMaxWidth()) {
-        Box(modifier = Modifier.align(Alignment.TopEnd).padding(end = 16.dp).width(220.dp)
-            .clip(RoundedCornerShape(8.dp)).drawBehind { drawCheckerboard() }
-            .border(1.dp, GreenPrimary, RoundedCornerShape(8.dp)).padding(8.dp)) {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                if (presets.isEmpty()) {
-                    Text("No presets saved.", color = GreenPrimary.copy(alpha = 0.6f), fontSize = 11.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.padding(4.dp))
-                } else {
-                    presets.forEach { preset ->
-                        var isRenaming by remember { mutableStateOf(false) }
-                        var renameText by remember(preset.name) { mutableStateOf(preset.name) }
-                        Row(modifier = Modifier.fillMaxWidth()
-                            .border(1.dp, GreenPrimary.copy(alpha = 0.4f), RoundedCornerShape(6.dp))
-                            .clickable { if (!isRenaming) onSelect(preset) }
-                            .padding(horizontal = 8.dp, vertical = 5.dp),
-                            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            if (isRenaming) {
-                                BasicTextField(value = renameText, onValueChange = { renameText = it }, singleLine = true,
-                                    textStyle = TextStyle(color = GreenPrimary, fontSize = 12.sp, fontFamily = FontFamily.Monospace),
-                                    cursorBrush = SolidColor(GreenPrimary),
-                                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                                    keyboardActions = KeyboardActions(onDone = { onRename(preset, renameText); isRenaming = false }),
-                                    modifier = Modifier.weight(1f))
-                                IconButton(onClick = { onRename(preset, renameText); isRenaming = false }, modifier = Modifier.size(22.dp)) {
-                                    Icon(Icons.Default.Check, contentDescription = "Save", tint = GreenPrimary, modifier = Modifier.size(14.dp))
-                                }
-                            } else {
-                                Text(preset.name, color = GreenPrimary, fontSize = 12.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                IconButton(onClick = { isRenaming = true }, modifier = Modifier.size(22.dp)) { Icon(Icons.Default.Edit, contentDescription = "Rename", tint = GreenPrimary.copy(alpha = 0.7f), modifier = Modifier.size(12.dp)) }
-                                IconButton(onClick = { onDelete(preset) }, modifier = Modifier.size(22.dp)) { Icon(Icons.Default.Close, contentDescription = "Delete", tint = GreenPrimary.copy(alpha = 0.7f), modifier = Modifier.size(12.dp)) }
-                            }
-                        }
-                    }
-                }
-                HorizontalDivider(color = GreenPrimary.copy(alpha = 0.3f))
-                Box(modifier = Modifier.fillMaxWidth().border(1.dp, GreenPrimary, RoundedCornerShape(6.dp))
-                    .clickable { onCreateNew() }.padding(horizontal = 8.dp, vertical = 5.dp)) {
-                    Text("+ Create New Preset", color = GreenPrimary, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-                }
-            }
-        }
-        // Dismiss when clicking outside
-        Box(modifier = Modifier.fillMaxSize().clickable { onDismiss() })
-    }
-}
-
 // ── Left Panel ────────────────────────────────────────────────────────────────
 @Composable
 fun LeftPanel(modifier: Modifier, messageTemplate: String, onTemplateChange: (String) -> Unit,
     nowPlaying: NowPlaying, livePreview: String, lastFmUsername: String, sourceMode: String,
-    onSetupClick: () -> Unit, onPickFolder: () -> Unit, onShowTracks: () -> Unit) {
+    onSetupClick: () -> Unit, onPickFolder: () -> Unit, onShowTracks: () -> Unit, onShowQueue: () -> Unit) {
     var fieldValue by remember { mutableStateOf(TextFieldValue(messageTemplate)) }
     fun insertAtCursor(insert: String) {
         val cursor = fieldValue.selection.end.coerceIn(0, fieldValue.text.length)
@@ -400,11 +479,10 @@ fun LeftPanel(modifier: Modifier, messageTemplate: String, onTemplateChange: (St
             Text(livePreview.ifEmpty { "(empty)" }, color = GreenPrimary, fontSize = 13.sp, fontFamily = FontFamily.Monospace, lineHeight = 18.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
         }
         Spacer(Modifier.height(6.dp))
-        // Bottom status bar: Last.fm status or Local player
         if (sourceMode == "LASTFM") {
             LastFmStatusBar(username = lastFmUsername, onSetupClick = onSetupClick)
         } else {
-            CompactLocalPlayer(onPickFolder = onPickFolder, onShowTracks = onShowTracks)
+            CompactLocalPlayer(onPickFolder = onPickFolder, onShowTracks = onShowTracks, onShowQueue = onShowQueue)
         }
     }
 }
@@ -427,23 +505,43 @@ fun LastFmStatusBar(username: String, onSetupClick: () -> Unit) {
 
 // ── Compact Local Player ──────────────────────────────────────────────────────
 @Composable
-fun CompactLocalPlayer(onPickFolder: () -> Unit, onShowTracks: () -> Unit) {
+fun CompactLocalPlayer(onPickFolder: () -> Unit, onShowTracks: () -> Unit, onShowQueue: () -> Unit) {
     val track = LocalMediaState.currentTrack
-    Column(modifier = Modifier.fillMaxWidth().border(1.dp, GreenPrimary, RoundedCornerShape(6.dp)).padding(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        // Top row: track info + buttons
+    Column(modifier = Modifier.fillMaxWidth().border(1.dp, GreenPrimary, RoundedCornerShape(6.dp)).padding(8.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
+        // Track info + buttons row
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(track?.title ?: "No track", color = GreenPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold, fontFamily = FontFamily.Monospace, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(track?.artist ?: if (LocalMediaState.tracks.isEmpty()) "Pick a folder to load music" else "Ready", color = GreenPrimary.copy(alpha = 0.7f), fontSize = 10.sp, fontFamily = FontFamily.Monospace, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             RaccoonButton(text = "Tracks", small = true, onClick = onShowTracks)
+            RaccoonButton(text = "Queue", small = true, onClick = onShowQueue)
             RaccoonButton(text = "📁", small = true, onClick = onPickFolder)
         }
 
-        // Seek bar + timestamp on same row
+        // Controls + shuffle/loop row
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+            IconButton(onClick = { LocalMediaState.toggleShuffle(!LocalMediaState.isShuffle) }, modifier = Modifier.size(28.dp)) {
+                Icon(Icons.Default.Shuffle, contentDescription = "Shuffle", tint = if (LocalMediaState.isShuffle) GreenPrimary else GreenPrimary.copy(alpha = 0.35f), modifier = Modifier.size(18.dp))
+            }
+            IconButton(onClick = { LocalMediaState.prev() }, modifier = Modifier.size(32.dp)) {
+                Icon(Icons.Default.SkipPrevious, contentDescription = "Prev", tint = GreenPrimary, modifier = Modifier.size(24.dp))
+            }
+            IconButton(onClick = { LocalMediaState.playPause() }, modifier = Modifier.size(40.dp)) {
+                Icon(if (LocalMediaState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = "Play/Pause", tint = GreenPrimary, modifier = Modifier.size(32.dp))
+            }
+            IconButton(onClick = { LocalMediaState.next() }, modifier = Modifier.size(32.dp)) {
+                Icon(Icons.Default.SkipNext, contentDescription = "Next", tint = GreenPrimary, modifier = Modifier.size(24.dp))
+            }
+            IconButton(onClick = { LocalMediaState.isLoop = !LocalMediaState.isLoop }, modifier = Modifier.size(28.dp)) {
+                Icon(Icons.Default.Repeat, contentDescription = "Loop", tint = if (LocalMediaState.isLoop) GreenPrimary else GreenPrimary.copy(alpha = 0.35f), modifier = Modifier.size(18.dp))
+            }
+        }
+
+        // Seek bar + timestamp — BELOW controls
         if (LocalMediaState.durationMs > 0) {
             val progress = (LocalMediaState.positionMs.toFloat() / LocalMediaState.durationMs).coerceIn(0f, 1f)
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
                 val posMin = (LocalMediaState.positionMs / 1000) / 60; val posSec = (LocalMediaState.positionMs / 1000) % 60
                 val durMin = (LocalMediaState.durationMs / 1000) / 60; val durSec = (LocalMediaState.durationMs / 1000) % 60
                 Text("%d:%02d".format(posMin, posSec), color = GreenPrimary.copy(alpha = 0.7f), fontSize = 9.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.width(30.dp))
@@ -454,32 +552,7 @@ fun CompactLocalPlayer(onPickFolder: () -> Unit, onShowTracks: () -> Unit) {
             }
         } else {
             Slider(value = 0f, onValueChange = {}, modifier = Modifier.fillMaxWidth().height(20.dp),
-                colors = SliderDefaults.colors(thumbColor = GreenPrimary.copy(alpha = 0.3f), activeTrackColor = GreenPrimary.copy(alpha = 0.2f), inactiveTrackColor = GreenPrimary.copy(alpha = 0.1f)),
-                enabled = false)
-        }
-
-        // Controls + shuffle/loop + volume all on one row
-        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
-            // Shuffle
-            IconButton(onClick = { LocalMediaState.toggleShuffle(!LocalMediaState.isShuffle) }, modifier = Modifier.size(28.dp)) {
-                Icon(Icons.Default.Shuffle, contentDescription = "Shuffle", tint = if (LocalMediaState.isShuffle) GreenPrimary else GreenPrimary.copy(alpha = 0.35f), modifier = Modifier.size(18.dp))
-            }
-            // Prev
-            IconButton(onClick = { LocalMediaState.prev() }, modifier = Modifier.size(32.dp)) {
-                Icon(Icons.Default.SkipPrevious, contentDescription = "Prev", tint = GreenPrimary, modifier = Modifier.size(24.dp))
-            }
-            // Play/Pause - always shown
-            IconButton(onClick = { LocalMediaState.playPause() }, modifier = Modifier.size(40.dp)) {
-                Icon(if (LocalMediaState.isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, contentDescription = "Play/Pause", tint = GreenPrimary, modifier = Modifier.size(32.dp))
-            }
-            // Next
-            IconButton(onClick = { LocalMediaState.next() }, modifier = Modifier.size(32.dp)) {
-                Icon(Icons.Default.SkipNext, contentDescription = "Next", tint = GreenPrimary, modifier = Modifier.size(24.dp))
-            }
-            // Loop
-            IconButton(onClick = { LocalMediaState.isLoop = !LocalMediaState.isLoop }, modifier = Modifier.size(28.dp)) {
-                Icon(Icons.Default.Repeat, contentDescription = "Loop", tint = if (LocalMediaState.isLoop) GreenPrimary else GreenPrimary.copy(alpha = 0.35f), modifier = Modifier.size(18.dp))
-            }
+                colors = SliderDefaults.colors(thumbColor = GreenPrimary.copy(alpha = 0.3f), activeTrackColor = GreenPrimary.copy(alpha = 0.2f), inactiveTrackColor = GreenPrimary.copy(alpha = 0.1f)), enabled = false)
         }
 
         // Volume row
@@ -548,15 +621,12 @@ fun RightPanel(modifier: Modifier, cyclingMessages: List<CyclingMessage>, cycleI
                                 textStyle = TextStyle(color = GreenPrimary, fontSize = 12.sp, fontFamily = FontFamily.Monospace),
                                 cursorBrush = SolidColor(GreenPrimary),
                                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                                keyboardActions = KeyboardActions(onDone = {
-                                    onMessagesChange(cyclingMessages.toMutableList().also { it[index] = msg.copy(text = editText.trim()) })
-                                    isEditing = false
-                                }), modifier = Modifier.weight(1f))
+                                keyboardActions = KeyboardActions(onDone = { onMessagesChange(cyclingMessages.toMutableList().also { it[index] = msg.copy(text = editText.trim()) }); isEditing = false }),
+                                modifier = Modifier.weight(1f))
                             IconButton(onClick = { onMessagesChange(cyclingMessages.toMutableList().also { it[index] = msg.copy(text = editText.trim()) }); isEditing = false }, modifier = Modifier.size(28.dp)) {
                                 Icon(Icons.Default.Check, contentDescription = "Save", tint = GreenPrimary) }
                         } else {
-                            Text(msg.text, color = if (msg.isHidden) GreenPrimary.copy(alpha = 0.35f) else GreenPrimary, fontSize = 12.sp, fontFamily = FontFamily.Monospace,
-                                modifier = Modifier.weight(1f).clickable { isEditing = true; editText = msg.text })
+                            Text(msg.text, color = if (msg.isHidden) GreenPrimary.copy(alpha = 0.35f) else GreenPrimary, fontSize = 12.sp, fontFamily = FontFamily.Monospace, modifier = Modifier.weight(1f).clickable { isEditing = true; editText = msg.text })
                             IconButton(onClick = { onMessagesChange(cyclingMessages.toMutableList().also { it[index] = msg.copy(isHidden = !msg.isHidden) }) }, modifier = Modifier.size(28.dp)) {
                                 Icon(if (msg.isHidden) Icons.Default.VisibilityOff else Icons.Default.Visibility, contentDescription = null, tint = if (msg.isHidden) GreenPrimary.copy(alpha = 0.35f) else GreenPrimary.copy(alpha = 0.7f)) }
                             IconButton(onClick = { if (index > 0) { val l = cyclingMessages.toMutableList(); val t = l[index]; l[index] = l[index-1]; l[index-1] = t; onMessagesChange(l) } }, modifier = Modifier.size(28.dp)) {
