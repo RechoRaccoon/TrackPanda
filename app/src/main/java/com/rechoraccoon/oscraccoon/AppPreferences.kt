@@ -12,6 +12,9 @@ data class VirtualPlaylist(
     val name: String,
     val trackUris: List<String> = emptyList(),
     val coverUri: String = "",
+    val coverOffsetX: Float = 0f,
+    val coverOffsetY: Float = 0f,
+    val coverScale: Float = 1f,
     val sortOrder: Int = 0
 )
 
@@ -64,6 +67,12 @@ object AppPreferences {
             gson.fromJson(raw, type) ?: emptyList()
         } catch (e: Exception) { emptyList() }
     }
+
+    fun saveCurrentPresetId(context: Context, id: String?) =
+        prefs(context).edit().putString("current_preset_id", id).apply()
+
+    fun loadCurrentPresetId(context: Context): String? =
+        prefs(context).getString("current_preset_id", null)
 
     fun savePlaylists(context: Context, playlists: List<VirtualPlaylist>) =
         prefs(context).edit().putString("playlists", gson.toJson(playlists)).apply()
