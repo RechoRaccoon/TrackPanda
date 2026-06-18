@@ -5,8 +5,6 @@ import android.media.MediaPlayer
 import android.net.Uri
 import androidx.compose.runtime.*
 
-data class QueueItem(val track: LocalTrack, val isManual: Boolean = false)
-
 object LocalMediaState {
     var tracks = mutableStateListOf<LocalTrack>()
     var playQueue = mutableStateListOf<LocalTrack>()
@@ -15,11 +13,12 @@ object LocalMediaState {
     var isPlaying by mutableStateOf(false)
     var positionMs by mutableStateOf(0L)
     var durationMs by mutableStateOf(0L)
-    var volume by mutableStateOf(1f)
+    // Default 0.5 = middle of slider. Actual audio = volume * 0.5f so max real vol is 50%
+    var volume by mutableStateOf(0.5f)
     var isShuffle by mutableStateOf(false)
     var isLoop by mutableStateOf(false)
-    var folderUri by mutableStateOf("")
-    var currentPlaylistId by mutableStateOf(ALL_TRACKS_ID)
+    // Incremented whenever track metadata changes — used as a recomposition key
+    var tracksVersion by mutableStateOf(0)
 
     private var mediaPlayer: MediaPlayer? = null
     private var appContext: Context? = null
@@ -29,9 +28,7 @@ object LocalMediaState {
         if (mediaPlayer == null) mediaPlayer = MediaPlayer()
     }
 
-    fun release() {
-        mediaPlayer?.release(); mediaPlayer = null
-    }
+    fun release() { mediaPlayer?.release(); mediaPlayer = null }
 
     val currentTrack: LocalTrack? get() = playQueue.getOrNull(currentIndex)
 
@@ -40,11 +37,11 @@ object LocalMediaState {
         if (playQueue.isEmpty()) { playQueue.clear(); playQueue.addAll(newTracks) }
     }
 
-    /** Load these tracks as the active queue and start playing immediately. */
-    fun loadAndPlayPlaylist(newTracks: List<LocalTrack>) {
+    /** Replace the play queue with newTracks and start playing at startIndex. */
+    fun loadAndPlayPlaylist(newTracks: List<LocalTrack>, startIndex: Int = 0) {
         if (newTracks.isEmpty()) return
         playQueue.clear(); playQueue.addAll(newTracks)
-        currentIndex = 0; playTrack(0)
+        playTrack(startIndex.coerceIn(0, newTracks.size - 1))
     }
 
     fun playTrack(index: Int) {
@@ -55,42 +52,44 @@ object LocalMediaState {
             mediaPlayer?.reset()
             mediaPlayer?.setDataSource(ctx, track.uri)
             mediaPlayer?.prepare()
-            mediaPlayer?.setVolume(volume, volume)
+            // Actual volume = slider * 0.5 so slider at 1.0 = 50% real volume
+            mediaPlayer?.setVolume(volume * 0.5f, volume * 0.5f)
             mediaPlayer?.setOnCompletionListener { onTrackComplete() }
             mediaPlayer?.start()
             isPlaying = true
             durationMs = mediaPlayer?.duration?.toLong() ?: 0L
-            // nowPlaying is derived from currentTrack in OSCRaccoonApp
         } catch (e: Exception) { e.printStackTrace() }
     }
 
     fun playPause() {
         val mp = mediaPlayer ?: return
         if (isPlaying) { mp.pause(); isPlaying = false }
-        else {
-            if (!mp.isPlaying && currentTrack != null) playTrack(currentIndex)
-            else { mp.start(); isPlaying = true }
-        }
+        else { mp.start(); isPlaying = true }
     }
 
     fun next() {
         if (manualQueue.isNotEmpty()) {
             val track = manualQueue.removeAt(0)
-            playQueue.add(currentIndex + 1, track)
+            if (currentIndex + 1 <= playQueue.size) playQueue.add(currentIndex + 1, track)
+            else playQueue.add(track)
         }
-        val next = if (isShuffle) (0 until playQueue.size).random()
-        else (currentIndex + 1) % playQueue.size.coerceAtLeast(1)
+        val next = if (isShuffle && playQueue.size > 1) {
+            var r: Int; do { r = (0 until playQueue.size).random() } while (r == currentIndex); r
+        } else (currentIndex + 1) % playQueue.size.coerceAtLeast(1)
         playTrack(next)
     }
 
     fun prev() {
-        val prev = if (currentIndex > 0) currentIndex - 1 else playQueue.size - 1
+        val prev = if (currentIndex > 0) currentIndex - 1 else (playQueue.size - 1).coerceAtLeast(0)
         playTrack(prev)
     }
 
     fun seek(ms: Long) { mediaPlayer?.seekTo(ms.toInt()); positionMs = ms }
 
-    fun changeVolume(v: Float) { volume = v; mediaPlayer?.setVolume(v, v) }
+    fun changeVolume(v: Float) {
+        volume = v
+        mediaPlayer?.setVolume(v * 0.5f, v * 0.5f)
+    }
 
     fun updatePosition() {
         val mp = mediaPlayer ?: return
@@ -107,14 +106,13 @@ object LocalMediaState {
         isShuffle = enabled
         if (enabled) {
             val current = currentTrack
-            val shuffled = playQueue.toMutableList()
-            shuffled.shuffle()
+            val shuffled = playQueue.toMutableList().also { it.shuffle() }
             current?.let { ct -> shuffled.remove(ct); shuffled.add(0, ct) }
             playQueue.clear(); playQueue.addAll(shuffled); currentIndex = 0
         }
     }
 
-    /** Update a track's metadata everywhere it appears in state. */
+    /** Update track info everywhere in state. Call tracksVersion++ to force UI refresh. */
     fun updateTrackInfo(oldUri: Uri, newTrack: LocalTrack) {
         val ti = tracks.indexOfFirst { it.uri == oldUri }
         if (ti >= 0) tracks[ti] = newTrack
@@ -122,6 +120,7 @@ object LocalMediaState {
         if (qi >= 0) playQueue[qi] = newTrack
         val mi = manualQueue.indexOfFirst { it.uri == oldUri }
         if (mi >= 0) manualQueue[mi] = newTrack
+        tracksVersion++
     }
 
     private fun onTrackComplete() {
