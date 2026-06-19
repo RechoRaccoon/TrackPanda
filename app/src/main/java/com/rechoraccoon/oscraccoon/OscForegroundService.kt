@@ -20,6 +20,7 @@ class OscForegroundService : Service() {
         const val EXTRA_MAIN_TEMPLATE = "main_template"
         const val EXTRA_CYCLING_MESSAGES = "cycling_messages"
         const val EXTRA_CYCLE_INTERVAL = "cycle_interval"
+        const val EXTRA_SOURCE_MODE = "source_mode"
         var isRunning = false
         var randomCycling = false
 
@@ -47,6 +48,7 @@ class OscForegroundService : Service() {
     @Volatile private var mainTemplate = "🎵 {song} by {artist}\n{cycling}\n{time}"
     @Volatile private var cyclingMessages = listOf<String>()
     @Volatile private var cycleIntervalSeconds = 1
+    @Volatile private var sourceMode = "LASTFM"
     private var currentCycleIndex = 0
     private var cycleTickCounter = 0
     private val random = Random()
@@ -61,6 +63,7 @@ class OscForegroundService : Service() {
                 mainTemplate = intent.getStringExtra(EXTRA_MAIN_TEMPLATE) ?: mainTemplate
                 cyclingMessages = intent.getStringArrayListExtra(EXTRA_CYCLING_MESSAGES) ?: listOf()
                 cycleIntervalSeconds = intent.getIntExtra(EXTRA_CYCLE_INTERVAL, 1)
+                sourceMode = intent.getStringExtra(EXTRA_SOURCE_MODE) ?: sourceMode
                 startForeground(1, buildNotification())
                 acquireWakeLock()
                 isRunning = true
@@ -70,6 +73,7 @@ class OscForegroundService : Service() {
                 mainTemplate = intent?.getStringExtra(EXTRA_MAIN_TEMPLATE) ?: mainTemplate
                 cyclingMessages = intent?.getStringArrayListExtra(EXTRA_CYCLING_MESSAGES) ?: listOf()
                 cycleIntervalSeconds = intent?.getIntExtra(EXTRA_CYCLE_INTERVAL, 1) ?: 1
+                sourceMode = intent?.getStringExtra(EXTRA_SOURCE_MODE) ?: sourceMode
                 if (currentCycleIndex >= cyclingMessages.size) currentCycleIndex = 0
             }
             ACTION_STOP -> stopSelf()
@@ -88,7 +92,9 @@ class OscForegroundService : Service() {
     private fun startOscLoop() {
         serviceScope.launch {
             while (isActive) {
-                val nowPlaying = LastFmService.nowPlaying.value
+                val nowPlaying = if (sourceMode == "LOCAL") {
+                    LocalMediaState.currentTrack?.let { NowPlaying(it.title, it.artist, LocalMediaState.isPlaying) } ?: NowPlaying()
+                } else LastFmService.nowPlaying.value
                 cycleTickCounter++
                 if (cycleTickCounter >= cycleIntervalSeconds) {
                     cycleTickCounter = 0

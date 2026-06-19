@@ -204,13 +204,14 @@ fun OSCRaccoonApp() {
     val currentCycling = if (visibleMessages.isNotEmpty()) visibleMessages[previewCycleIndex.coerceIn(0, (visibleMessages.size - 1).coerceAtLeast(0))] else ""
     val livePreview = OscForegroundService.formatTemplate(messageTemplate, nowPlaying, currentCycling)
 
-    LaunchedEffect(messageTemplate, visibleMessages, cycleInterval) {
+    LaunchedEffect(messageTemplate, visibleMessages, cycleInterval, sourceMode) {
         if (isRunning) {
             context.startForegroundService(Intent(context, OscForegroundService::class.java).apply {
                 action = OscForegroundService.ACTION_UPDATE
                 putExtra(OscForegroundService.EXTRA_MAIN_TEMPLATE, messageTemplate)
                 putStringArrayListExtra(OscForegroundService.EXTRA_CYCLING_MESSAGES, ArrayList(visibleMessages))
                 putExtra(OscForegroundService.EXTRA_CYCLE_INTERVAL, cycleInterval)
+                putExtra(OscForegroundService.EXTRA_SOURCE_MODE, sourceMode)
             })
         }
     }
@@ -246,6 +247,7 @@ fun OSCRaccoonApp() {
                             putExtra(OscForegroundService.EXTRA_MAIN_TEMPLATE, messageTemplate)
                             putStringArrayListExtra(OscForegroundService.EXTRA_CYCLING_MESSAGES, ArrayList(visibleMessages))
                             putExtra(OscForegroundService.EXTRA_CYCLE_INTERVAL, cycleInterval)
+                            putExtra(OscForegroundService.EXTRA_SOURCE_MODE, sourceMode)
                         }); isRunning = true
                     }
                 },

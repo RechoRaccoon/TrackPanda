@@ -55,7 +55,7 @@ object AppPreferences {
     fun loadInterval(context: Context): Int = prefs(context).getInt("cycle_interval", 1)
 
     fun saveSourceMode(context: Context, mode: String) = prefs(context).edit().putString("source_mode", mode).apply()
-    fun loadSourceMode(context: Context): String = prefs(context).getString("source_mode", "LASTFM") ?: "LASTFM"
+    fun loadSourceMode(context: Context): String = prefs(context).getString("source_mode", "LOCAL") ?: "LOCAL"
 
     fun saveLocalFolderUri(context: Context, uri: String) = prefs(context).edit().putString("local_folder_uri", uri).apply()
     fun loadLocalFolderUri(context: Context): String = prefs(context).getString("local_folder_uri", "") ?: ""

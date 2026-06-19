@@ -19,6 +19,9 @@ object LocalMediaState {
     var isLoop by mutableStateOf(false)
     // Incremented whenever track metadata changes — used as a recomposition key
     var tracksVersion by mutableStateOf(0)
+    // Tracks which playlist (or ALL_TRACKS_ID) is currently playing, so playback
+    // order stays consistent whether driven from Tracks mode or Chatbox mode.
+    var currentPlaylistId by mutableStateOf(ALL_TRACKS_ID)
 
     private var mediaPlayer: MediaPlayer? = null
     private var appContext: Context? = null
