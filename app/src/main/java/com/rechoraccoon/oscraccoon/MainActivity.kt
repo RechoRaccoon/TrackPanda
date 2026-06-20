@@ -125,6 +125,32 @@ fun loadTracksFromFolder(context: android.content.Context, folderUri: Uri, overr
     return tracks
 }
 
+/**
+ * After DocumentsContract.renameDocument(), don't trust its return value — some storage
+ * providers (notably some SAF implementations on Quest's Android fork) actually rename the
+ * file on disk but return null or a stale uri. Re-scan the parent folder and match by the
+ * exact display name we just renamed to, which reflects what's truly on disk.
+ */
+fun findDocumentUriByDisplayName(context: android.content.Context, folderUri: Uri, targetDisplayName: String): Uri? {
+    try {
+        val docId = DocumentsContract.getTreeDocumentId(folderUri)
+        val childUri = DocumentsContract.buildChildDocumentsUriUsingTree(folderUri, docId)
+        val cursor = context.contentResolver.query(childUri,
+            arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID, DocumentsContract.Document.COLUMN_DISPLAY_NAME),
+            null, null, null) ?: return null
+        cursor.use { c ->
+            while (c.moveToNext()) {
+                val name = c.getString(1) ?: continue
+                if (name == targetDisplayName) {
+                    val id = c.getString(0) ?: continue
+                    return DocumentsContract.buildDocumentUriUsingTree(folderUri, id)
+                }
+            }
+        }
+    } catch (e: Exception) { e.printStackTrace() }
+    return null
+}
+
 @Composable
 fun OSCRaccoonApp() {
     val context = LocalContext.current

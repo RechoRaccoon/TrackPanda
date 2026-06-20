@@ -477,16 +477,25 @@ fun TracksContent(showTrackQueue: Boolean) {
             EditTrackDialog(track = track,
                 onConfirm = { newTitle, newArtist ->
                     var finalUri = track.uri
+                    var newFileName = ""
                     try {
                         val displayName = context.contentResolver.query(track.uri, arrayOf(DocumentsContract.Document.COLUMN_DISPLAY_NAME), null, null, null)?.use { c -> if (c.moveToFirst()) c.getString(0) else null } ?: "track.mp3"
                         val ext = displayName.substringAfterLast('.', "mp3")
-                        val renamed = DocumentsContract.renameDocument(context.contentResolver, track.uri, "$newTitle - $newArtist.$ext")
-                        if (renamed != null) finalUri = renamed
+                        newFileName = "$newTitle - $newArtist.$ext"
+                        DocumentsContract.renameDocument(context.contentResolver, track.uri, newFileName)
+                        // Don't trust the return value here — re-scan the parent folder and
+                        // match by the exact name we just set, which reflects what's truly on
+                        // disk regardless of what (possibly stale/null) uri the provider handed back.
+                        val folderUriStr = AppPreferences.loadLocalFolderUri(context)
+                        if (folderUriStr.isNotEmpty()) {
+                            val found = findDocumentUriByDisplayName(context, Uri.parse(folderUriStr), newFileName)
+                            if (found != null) finalUri = found
+                        }
                     } catch (e: Exception) { e.printStackTrace() }
-                    // Save the override keyed to the FINAL uri (renameDocument returns a new
-                    // uri since the document id encodes the filename) — saving under the old
-                    // uri here was the bug: on next launch the rescan finds the file under its
-                    // new uri, the override lookup misses, and the stale ID3 tags win back.
+                    // Save the override keyed to the FINAL uri — saving under the old, now
+                    // possibly-stale uri was the original bug: on next launch the rescan finds
+                    // the file under its real current uri, the override lookup misses, and the
+                    // stale ID3 tags win back.
                     val overrides = AppPreferences.loadTrackOverrides(context).toMutableMap()
                     if (finalUri.toString() != track.uri.toString()) overrides.remove(track.uri.toString())
                     overrides[finalUri.toString()] = TrackOverride(newTitle, newArtist)
