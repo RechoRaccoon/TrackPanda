@@ -81,6 +81,11 @@ object AppPreferences {
     fun loadAppMode(context: Context): String =
         prefs(context).getString("app_mode", "chatbox") ?: "chatbox"
 
+    fun savePlaylistGridColumns(context: Context, columns: Int) =
+        prefs(context).edit().putInt("playlist_grid_columns", columns).apply()
+    fun loadPlaylistGridColumns(context: Context): Int =
+        prefs(context).getInt("playlist_grid_columns", 3)
+
     fun saveTrackOverrides(context: Context, overrides: Map<String, TrackOverride>) =
         prefs(context).edit().putString("track_overrides", gson.toJson(overrides)).apply()
 

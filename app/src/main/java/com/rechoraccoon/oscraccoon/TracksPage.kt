@@ -70,7 +70,7 @@ fun TracksContent(showTrackQueue: Boolean) {
     val context = LocalContext.current
     var playlists by remember { mutableStateOf(AppPreferences.loadPlaylists(context)) }
     var selectedPlaylistId by remember { mutableStateOf(ALL_TRACKS_ID) }
-    var gridColumns by remember { mutableStateOf(3) }
+    var gridColumns by remember { mutableStateOf(AppPreferences.loadPlaylistGridColumns(context)) }
     var showCreatePlaylist by remember { mutableStateOf(false) }
     var editingTrack by remember { mutableStateOf<LocalTrack?>(null) }
 
@@ -428,7 +428,7 @@ fun TracksContent(showTrackQueue: Boolean) {
                     Spacer(Modifier.height(6.dp))
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
                         Text("Size:", color = GreenPrimary, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
-                        RaccoonSlider(value = gridColumns.toFloat(), onValueChange = { gridColumns = it.toInt() }, valueRange = 1f..5f, modifier = Modifier.weight(1f))
+                        RaccoonSlider(value = gridColumns.toFloat(), onValueChange = { gridColumns = it.toInt(); AppPreferences.savePlaylistGridColumns(context, it.toInt()) }, valueRange = 1f..5f, modifier = Modifier.weight(1f))
                     }
                 }
             }
