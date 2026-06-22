@@ -4,11 +4,11 @@ plugins {
 }
 
 android {
-    namespace 'rechoraccoon.trackpanda'
+    namespace 'rechoraccoon.trackspanda'
     compileSdk 34
 
     defaultConfig {
-        applicationId "rechoraccoon.trackpanda"
+        applicationId "rechoraccoon.trackspanda"
         minSdk 26
         targetSdk 34
         versionCode 1
